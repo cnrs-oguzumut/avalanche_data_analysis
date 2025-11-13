@@ -217,7 +217,7 @@ def linear_binning(data, nbin=20, xmin=None, xmax=None):
     bins = np.linspace(xmin, xmax, nbin+1)
     
     # Compute histogram
-    hist, bin_edges = np.histogram(data, bins=bins, density=True)
+    hist, bin_edges = np.histogram(data, bins=bins, density=False)
     
     # Compute bin centers (arithmetic mean)
     bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2
