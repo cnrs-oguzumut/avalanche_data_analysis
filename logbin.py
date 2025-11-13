@@ -15,7 +15,7 @@ def read_energy_stress_log(filename="energy_stress_log.csv"):
     Read the CSV file created by ConfigurationSaver::logEnergyAndStress
     
     Returns:
-        alpha, energy_change, stress_change, plasticity_flag as numpy arrays
+        alpha, energy (col 5), stress (col 6), energy_change (col 6), stress_change (col 7), plasticity_flag
     """
     try:
         # Skip header row and read all data
@@ -24,23 +24,25 @@ def read_energy_stress_log(filename="energy_stress_log.csv"):
         # Handle empty or single-line files
         if data.ndim == 0 or data.size == 0:
             print(f"  WARNING: File '{filename}' is empty or has no data. Skipping.")
-            return (np.array([]), np.array([]), np.array([]), np.array([]))
+            return (np.array([]), np.array([]), np.array([]), np.array([]), np.array([]), np.array([]))
         
         # Handle files with only one data row
         if data.ndim == 1:
             data = data.reshape(1, -1)
 
         # Extract columns
-        alpha = data[:, 1]
-        energy_change = data[:, 6]
-        stress_change = data[:, 7]
+        alpha = data[:, 1]                    # Column B (index 1)
+        energy = data[:, 4]                   # Column 5 (index 4) - for time series
+        stress = data[:, 5]                   # Column 6 (index 5) - for time series
+        energy_change = data[:, 6]            # Column 7 (index 6) - for avalanche statistics
+        stress_change = data[:, 7]            # Column 8 (index 7) - for avalanche statistics
         plasticity_flag = data[:, 8].astype(int)
         
-        return alpha, energy_change, stress_change, plasticity_flag
+        return alpha, energy, stress, energy_change, stress_change, plasticity_flag
         
     except Exception as e:
         print(f"  ERROR: Could not read file '{filename}'. Reason: {e}. Skipping.")
-        return (np.array([]), np.array([]), np.array([]), np.array([]))
+        return (np.array([]), np.array([]), np.array([]), np.array([]), np.array([]), np.array([]))
 
 
 def load_and_process_data(filenames, config):
@@ -54,18 +56,29 @@ def load_and_process_data(filenames, config):
     all_paired_energy = []
     all_paired_stress = []
     
+    # NEW: Store UNFILTERED time series data per file for plotting
+    time_series_data = []
+    
     cfg_filters = config['FILTERS']
     
     for filename in filenames:
         print(f"  Processing: {filename}")
         
-        # Read data
-        alpha, energy_change, stress_change, plasticity_flag = read_energy_stress_log(filename)
+        # Read data - now getting both time series (col 5,6) and change data (col 6,7)
+        alpha, energy, stress, energy_change, stress_change, plasticity_flag = read_energy_stress_log(filename)
         
         if len(alpha) == 0:
             continue
+        
+        # NEW: Store UNFILTERED raw time series data (columns B, 5, 6) for time series plots
+        time_series_data.append({
+            'filename': filename,
+            'alpha': alpha.copy(),
+            'energy': energy.copy(),     # Column 5 (index 4)
+            'stress': stress.copy(),     # Column 6 (index 5)
+        })
             
-        # Apply common filters
+        # Apply common filters (for statistical analysis only, using columns 6 and 7)
         mask = np.ones(len(alpha), dtype=bool)
         
         if cfg_filters['BY_PLASTICITY']:
@@ -145,6 +158,7 @@ def load_and_process_data(filenames, config):
         'stress': np.concatenate(all_stress_data) if all_stress_data else np.array([]),
         'paired_energy': np.concatenate(all_paired_energy) if all_paired_energy else np.array([]),
         'paired_stress': np.concatenate(all_paired_stress) if all_paired_stress else np.array([]),
+        'time_series': time_series_data  # NEW: UNFILTERED data (col B, 5, 6) for time series plots
     }
 
     print(f"\n{'='*60}")
@@ -153,6 +167,7 @@ def load_and_process_data(filenames, config):
     print(f"  Total energy avalanches: {len(raw_data['energy'])}")
     print(f"  Total stress avalanches: {len(raw_data['stress'])}")
     print(f"  Total paired E-S events: {len(raw_data['paired_energy'])}")
+    print(f"  Number of time series files: {len(time_series_data)}")
     print(f"{'='*60}\n")
     
     return raw_data
@@ -161,6 +176,36 @@ def load_and_process_data(filenames, config):
 # =============================================================================
 # == ANALYSIS FUNCTIONS (BINNING, FITTING)
 # =============================================================================
+
+def compute_running_average(x, y, window_size):
+    """
+    Compute running average of y as a function of x using a sliding window.
+    
+    Args:
+        x: array of x values (e.g., alpha)
+        y: array of y values (e.g., energy or stress)
+        window_size: number of points in the sliding window
+    
+    Returns:
+        x_avg, y_avg: arrays of averaged values
+    """
+    if len(x) < window_size:
+        return x, y
+    
+    # Sort by x to ensure proper ordering
+    sorted_indices = np.argsort(x)
+    x_sorted = x[sorted_indices]
+    y_sorted = y[sorted_indices]
+    
+    x_avg = []
+    y_avg = []
+    
+    for i in range(len(x_sorted) - window_size + 1):
+        x_avg.append(np.mean(x_sorted[i:i+window_size]))
+        y_avg.append(np.mean(y_sorted[i:i+window_size]))
+    
+    return np.array(x_avg), np.array(y_avg)
+
 
 def logarithmic_binning(data, nbin=14, xmin=None, xmax=None):
     """
@@ -614,6 +659,135 @@ def _plot_distribution(ax, bin_results, fit_results, title, xlabel):
     ax.legend()
 
 
+def plot_time_series(raw_data, config):
+    """
+    NEW: Plot alpha vs energy and alpha vs stress time series with running averages.
+    Uses UNFILTERED data from columns B (alpha), column 5 (energy), column 6 (stress).
+    """
+    print("\n" + "="*50)
+    print("GENERATING TIME SERIES PLOTS (UNFILTERED DATA)")
+    print("="*50)
+    
+    output_dir = config['OUTPUT_DIR']
+    filename_suffix = _get_filename_suffix(config)
+    
+    time_series_data = raw_data['time_series']
+    
+    if len(time_series_data) == 0:
+        print("  No time series data available.")
+        return
+    
+    window_size = config['ANALYSIS'].get('RUNNING_AVG_WINDOW', 100)
+    
+    # Define colors for different files (for running averages)
+    colors = plt.cm.tab10(np.linspace(0, 1, len(time_series_data)))
+    
+    # --- Plot 1: Alpha vs Energy (Column B vs Column 5) ---
+    fig1, ax1 = plt.subplots(figsize=(12, 6))
+    
+    all_alpha_energy = []
+    all_energy_values = []
+    
+    # Collect all data
+    for idx, data in enumerate(time_series_data):
+        alpha = data['alpha']
+        energy = data['energy']
+        
+        all_alpha_energy.extend(alpha)
+        all_energy_values.extend(energy)
+    
+    # Convert to numpy arrays
+    all_alpha_energy = np.array(all_alpha_energy)
+    all_energy_values = np.array(all_energy_values)
+    
+    print(f"  Plotting {len(all_alpha_energy)} raw energy data points...")
+    
+    # Plot raw data as scatter - FIRST, so it's in the background
+    ax1.scatter(all_alpha_energy, all_energy_values, s=13, alpha=1., 
+                color='red', label='Raw data', zorder=1, rasterized=True)
+    
+    # Plot running averages with LINES for each file
+    for idx, data in enumerate(time_series_data):
+        alpha = data['alpha']
+        energy = data['energy']
+        filename = os.path.basename(data['filename'])
+        
+        if len(alpha) >= window_size:
+            alpha_avg, energy_avg = compute_running_average(alpha, energy, window_size)
+            ax1.plot(alpha_avg, energy_avg, '-', linewidth=2, color=colors[idx], 
+                    label=f'{filename}', zorder=2)
+    
+    # Plot overall running average with THICK LINE
+    if len(all_alpha_energy) >= window_size:
+        alpha_avg_all, energy_avg_all = compute_running_average(all_alpha_energy, all_energy_values, window_size)
+        ax1.plot(alpha_avg_all, energy_avg_all, '-', linewidth=4, color='black', 
+                label='Overall average', zorder=10)
+    
+    ax1.set_xlabel('α (Loading Parameter - Column B)', fontsize=13, fontweight='bold')
+    ax1.set_ylabel('Energy (Column 5)', fontsize=13, fontweight='bold')
+    ax1.set_title('Energy vs Alpha (Unfiltered Time Series)', fontsize=14, fontweight='bold')
+    ax1.grid(True, alpha=0.3)
+    ax1.legend(loc='best', fontsize=9)
+    plt.tight_layout()
+    
+    plot_path = os.path.join(output_dir, f'alpha_vs_energy_timeseries{filename_suffix}.png')
+    plt.savefig(plot_path, dpi=200)
+    print(f"  Saved: {plot_path}")
+    plt.close(fig1)
+    
+    # --- Plot 2: Alpha vs Stress (Column B vs Column 6) ---
+    fig2, ax2 = plt.subplots(figsize=(12, 6))
+    
+    all_alpha_stress = []
+    all_stress_values = []
+    
+    # Collect all data
+    for idx, data in enumerate(time_series_data):
+        alpha = data['alpha']
+        stress = data['stress']
+        
+        all_alpha_stress.extend(alpha)
+        all_stress_values.extend(stress)
+    
+    # Convert to numpy arrays
+    all_alpha_stress = np.array(all_alpha_stress)
+    all_stress_values = np.array(all_stress_values)
+    
+    print(f"  Plotting {len(all_alpha_stress)} raw stress data points...")
+    
+    # Plot raw data as scatter - FIRST, so it's in the background
+    ax2.scatter(all_alpha_stress, all_stress_values, s=19, alpha=1., 
+                color='red', label='Raw data', zorder=1, rasterized=True)
+    
+    # Plot running averages with LINES for each file
+    for idx, data in enumerate(time_series_data):
+        alpha = data['alpha']
+        stress = data['stress']
+        filename = os.path.basename(data['filename'])
+        
+        if len(alpha) >= window_size:
+            alpha_avg, stress_avg = compute_running_average(alpha, stress, window_size)
+            ax2.plot(alpha_avg, stress_avg, '-', linewidth=2, color=colors[idx], 
+                    label=f'{filename}', zorder=2)
+    
+    # Plot overall running average with THICK LINE
+    if len(all_alpha_stress) >= window_size:
+        alpha_avg_all, stress_avg_all = compute_running_average(all_alpha_stress, all_stress_values, window_size)
+        ax2.plot(alpha_avg_all, stress_avg_all, '-', linewidth=4, color='black', 
+                label='Overall average', zorder=10)
+    
+    ax2.set_xlabel('α (Loading Parameter - Column B)', fontsize=13, fontweight='bold')
+    ax2.set_ylabel('Stress (Column 6)', fontsize=13, fontweight='bold')
+    ax2.set_title('Stress vs Alpha (Unfiltered Time Series)', fontsize=14, fontweight='bold')
+    ax2.grid(True, alpha=0.3)
+    ax2.legend(loc='best', fontsize=9)
+    plt.tight_layout()
+    
+    plot_path = os.path.join(output_dir, f'alpha_vs_stress_timeseries{filename_suffix}.png')
+    plt.savefig(plot_path, dpi=200)
+    print(f"  Saved: {plot_path}")
+    plt.close(fig2)
+
 def generate_plots(raw_data, analysis_results, config):
     """
     Generate and save all plots based on the analysis results.
@@ -627,6 +801,9 @@ def generate_plots(raw_data, analysis_results, config):
     title_suffix = _get_title_suffix(config)
     
     cfg_analysis = config['ANALYSIS']
+    
+    # --- NEW: Time Series Plots (UNFILTERED DATA from columns B, 5, 6) ---
+    plot_time_series(raw_data, config)
     
     # --- Plot 0: Energy vs Stress Scaling ---
     if 'binned_data' in analysis_results['scaling']:
@@ -924,11 +1101,11 @@ def main():
             'BY_PLASTICITY': False,
             'BY_ALPHA': True,
             'ALPHA_MIN': 0.1401,
-            'ALPHA_MAX': 0.4,
+            'ALPHA_MAX': 1.,
             
             'BY_XMIN': True,
-            'ENERGY_XMIN': 1e-3,
-            'STRESS_XMIN': 1,
+            'ENERGY_XMIN': 1e-4,
+            'STRESS_XMIN': 0,
             
             'BY_XMAX': False,
             'ENERGY_XMAX': 1e-2,
@@ -942,9 +1119,11 @@ def main():
             'ANALYZE_ALPHA_DIFF': True,
             'FIT_ALPHA_DIFF': False,
             
-            'NBIN': 13,
+            'NBIN': 10,
             'NBIN_LINEAR': 30,
-            'NBIN_SCALING': 15,
+            'NBIN_SCALING': 9,
+            
+            'RUNNING_AVG_WINDOW': 100,  # Window size for running average in time series plots
         }
     }
     # =========================
@@ -975,7 +1154,7 @@ def main():
     print("="*60)
     raw_data = load_and_process_data(filenames, CONFIG)
     
-    if all(len(v) == 0 for v in raw_data.values()):
+    if all(len(v) == 0 for k, v in raw_data.items() if k != 'time_series'):
         print("ERROR: No data was loaded after processing. Check files and filters.")
         exit(1)
 
@@ -985,7 +1164,7 @@ def main():
     print("="*60)
     analysis_results = run_analyses(raw_data, CONFIG)
 
-    # 5. Generate Plots
+    # 5. Generate Plotsf
     print("\n" + "="*60)
     print("STEP 3: GENERATING PLOTS")
     print("="*60)
