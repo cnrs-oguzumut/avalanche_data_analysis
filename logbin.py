@@ -333,12 +333,12 @@ if __name__ == "__main__":
     
     FILTER_BY_PLASTICITY = False
     FILTER_BY_ALPHA = True
-    ALPHA_MIN = 0.142
-    ALPHA_MAX = .45
+    ALPHA_MIN = 0.16
+    ALPHA_MAX = .4
     
     FILTER_BY_XMIN = True
-    ENERGY_XMIN = 0e-3
-    STRESS_XMIN = 18
+    ENERGY_XMIN = 1e-3
+    STRESS_XMIN = 20
     
     FILTER_BY_XMAX = False
     ENERGY_XMAX = 1e-2
@@ -352,7 +352,7 @@ if __name__ == "__main__":
     
     OUTPUT_DIR = './statistics'
     
-    nbin = 12
+    nbin = 13
     nbin_linear = 30
     # =========================
     
@@ -603,6 +603,82 @@ if __name__ == "__main__":
     stress_centers, stress_hist, stress_log_centers, stress_log_hist, stress_dx = result
     print(f"Number of bins: {len(stress_centers)}")
     
+    # ===== ENERGY vs STRESS RELATIONSHIP =====
+    print("\n=== Energy vs Stress Relationship ===")
+    
+    # For multiple files, we need to reprocess to get paired energy-stress data
+    if USE_MULTIPLE_FILES:
+        print("Extracting paired energy-stress data from multiple files...")
+        all_energy_stress_pairs = []
+        
+        for filename in filenames:
+            alpha, energy_change, stress_change, plasticity_flag = read_energy_stress_log(filename)
+            
+            # Apply same filters as before
+            mask = np.ones(len(alpha), dtype=bool)
+            
+            if FILTER_BY_PLASTICITY:
+                mask = mask & (plasticity_flag == 1)
+            
+            if FILTER_BY_ALPHA:
+                mask = mask & (alpha >= ALPHA_MIN) & (alpha <= ALPHA_MAX)
+            
+            energy_change_filtered = energy_change[mask]
+            stress_change_filtered = stress_change[mask]
+            
+            # Keep only events where BOTH energy and stress are positive
+            both_positive_mask = (energy_change_filtered > 0) & (stress_change_filtered > 0)
+            energy_paired = energy_change_filtered[both_positive_mask]
+            stress_paired = stress_change_filtered[both_positive_mask]
+            
+            # Apply xmin/xmax filters if needed
+            if FILTER_BY_XMIN or FILTER_BY_XMAX:
+                pair_mask = np.ones(len(energy_paired), dtype=bool)
+                
+                if FILTER_BY_XMIN:
+                    pair_mask = pair_mask & (energy_paired >= ENERGY_XMIN) & (stress_paired >= STRESS_XMIN)
+                
+                if FILTER_BY_XMAX:
+                    pair_mask = pair_mask & (energy_paired <= ENERGY_XMAX) & (stress_paired <= STRESS_XMAX)
+                
+                energy_paired = energy_paired[pair_mask]
+                stress_paired = stress_paired[pair_mask]
+            
+            all_energy_stress_pairs.append((energy_paired, stress_paired))
+        
+        # Combine all pairs
+        energy_for_scaling = np.concatenate([e for e, s in all_energy_stress_pairs])
+        stress_for_scaling = np.concatenate([s for e, s in all_energy_stress_pairs])
+        
+    else:
+        # Single file: extract paired data
+        print("Extracting paired energy-stress data from single file...")
+        
+        # Keep only events where BOTH energy and stress are positive
+        both_positive_mask = (energy_change_filtered > 0) & (stress_change_filtered > 0)
+        energy_paired = energy_change_filtered[both_positive_mask]
+        stress_paired = stress_change_filtered[both_positive_mask]
+        
+        # Apply xmin/xmax filters if needed
+        if FILTER_BY_XMIN or FILTER_BY_XMAX:
+            pair_mask = np.ones(len(energy_paired), dtype=bool)
+            
+            if FILTER_BY_XMIN:
+                pair_mask = pair_mask & (energy_paired >= ENERGY_XMIN) & (stress_paired >= STRESS_XMIN)
+            
+            if FILTER_BY_XMAX:
+                pair_mask = pair_mask & (energy_paired <= ENERGY_XMAX) & (stress_paired <= STRESS_XMAX)
+            
+            energy_paired = energy_paired[pair_mask]
+            stress_paired = stress_paired[pair_mask]
+        
+        energy_for_scaling = energy_paired
+        stress_for_scaling = stress_paired
+    
+    print(f"Number of paired energy-stress events: {len(energy_for_scaling)}")
+    print(f"Energy range: [{np.min(energy_for_scaling):.6e}, {np.max(energy_for_scaling):.6e}]")
+    print(f"Stress range: [{np.min(stress_for_scaling):.6e}, {np.max(stress_for_scaling):.6e}]")
+    
     # Fit data
     energy_fit_params = None
     stress_fit_params = None
@@ -748,6 +824,110 @@ if __name__ == "__main__":
     # Create and save individual plots
     print("\n=== Creating and saving plots ===")
     
+# Plot 0: Energy vs Stress scaling relationship with binning
+if len(energy_for_scaling) > 0 and len(stress_for_scaling) > 0:
+    fig0, ax0 = plt.subplots(figsize=(8, 6))
+    
+    # Plot raw data points
+    ax0.plot(np.log10(stress_for_scaling), np.log10(energy_for_scaling), 
+            linestyle='None', marker='.', markersize=12, color='blue', alpha=0.3, 
+            label='Data points', zorder=1)
+    
+    # Compute binned averages
+    print("\n=== Computing binned E~S relationship ===")
+    n_bins_ES = 15  # Number of bins for E-S relationship
+    
+    # Create logarithmic bins for stress
+    log_stress = np.log10(stress_for_scaling)
+    log_energy = np.log10(energy_for_scaling)
+    
+    stress_min = np.min(log_stress)
+    stress_max = np.max(log_stress)
+    
+    bins_ES = np.linspace(stress_min, stress_max, n_bins_ES + 1)
+    
+    # Compute mean energy for each stress bin
+    binned_stress = []
+    binned_energy_mean = []
+    binned_energy_std = []
+    binned_counts = []
+    
+    for i in range(len(bins_ES) - 1):
+        mask = (log_stress >= bins_ES[i]) & (log_stress < bins_ES[i+1])
+        if np.sum(mask) > 0:
+            bin_center = (bins_ES[i] + bins_ES[i+1]) / 2
+            binned_stress.append(bin_center)
+            binned_energy_mean.append(np.mean(log_energy[mask]))
+            binned_energy_std.append(np.std(log_energy[mask]))
+            binned_counts.append(np.sum(mask))
+    
+    binned_stress = np.array(binned_stress)
+    binned_energy_mean = np.array(binned_energy_mean)
+    binned_energy_std = np.array(binned_energy_std)
+    binned_counts = np.array(binned_counts)
+    
+    # Plot binned averages with error bars
+    ax0.errorbar(binned_stress, binned_energy_mean, yerr=binned_energy_std,
+                fmt='o', markersize=8, capsize=5, capthick=2, 
+                color='red', ecolor='darkred', linewidth=2,
+                label='Binned mean ± std', zorder=3)
+    
+    # Fit power law to binned data: log(E) = γ * log(S) + const
+    if len(binned_stress) >= 2:
+        # Linear fit in log-log space
+        coeffs = np.polyfit(binned_stress, binned_energy_mean, 1)
+        gamma = coeffs[0]
+        intercept = coeffs[1]
+        
+        # Create fit line
+        stress_fit = np.linspace(stress_min, stress_max, 100)
+        energy_fit = gamma * stress_fit + intercept
+        
+        ax0.plot(stress_fit, energy_fit, 'b--', linewidth=2.5, 
+                label=f'Power law fit: γ = {gamma:.3f}', zorder=2)
+        
+        print(f"E ~ S^γ power law fit:")
+        print(f"  γ (exponent) = {gamma:.4f}")
+        print(f"  Intercept = {intercept:.4f}")
+        print(f"  10^intercept = {10**intercept:.4e}")
+        
+        # Compute R² for the fit
+        residuals = binned_energy_mean - (gamma * binned_stress + intercept)
+        ss_res = np.sum(residuals**2)
+        ss_tot = np.sum((binned_energy_mean - np.mean(binned_energy_mean))**2)
+        r_squared = 1 - (ss_res / ss_tot)
+        print(f"  R² = {r_squared:.4f}")
+    
+    ax0.set_xlabel('log₁₀(Stress Change)', fontsize=13, fontweight='bold')
+    ax0.set_ylabel('log₁₀(Energy Change)', fontsize=13, fontweight='bold')
+    ax0.set_title('Energy-Stress Scaling: E ~ S^γ' + title_suffix, fontsize=14, fontweight='bold')
+    ax0.grid(True, alpha=0.3, linestyle='--')
+    ax0.legend(fontsize=11, loc='best')
+    plt.tight_layout()
+    
+    energy_stress_plot_path = os.path.join(OUTPUT_DIR, f'energy_vs_stress_scaling{filename_suffix}.png')
+    plt.savefig(energy_stress_plot_path, dpi=200)
+    print(f"Saved: {energy_stress_plot_path}")
+    plt.close(fig0)
+    
+    # Save the binned data
+    binned_data_path = os.path.join(OUTPUT_DIR, f'data_energy_vs_stress_binned{filename_suffix}.dat')
+    with open(binned_data_path, 'w') as f:
+        f.write("# Binned Energy-Stress relationship\n")
+        f.write("# log10(Stress_center), log10(Energy_mean), log10(Energy_std), count\n")
+        for s, e, std, cnt in zip(binned_stress, binned_energy_mean, binned_energy_std, binned_counts):
+            f.write(f"{s:.6e}, {e:.6e}, {std:.6e}, {int(cnt)}\n")
+    print(f"Saved: {binned_data_path}")
+    
+    # Also save the raw paired data
+    energy_stress_data_path = os.path.join(OUTPUT_DIR, f'data_energy_vs_stress_raw{filename_suffix}.dat')
+    with open(energy_stress_data_path, 'w') as f:
+        f.write("# Raw paired data\n")
+        f.write("# log10(Stress), log10(Energy)\n")
+        for s, e in zip(stress_for_scaling, energy_for_scaling):
+            f.write(f"{np.log10(s):.6e}, {np.log10(e):.6e}\n")
+    print(f"Saved: {energy_stress_data_path}")
+
     # Plot 1: Energy change distribution
     fig1, ax1 = plt.subplots(figsize=(7, 5))
     mask = ~np.isinf(energy_log_hist)
