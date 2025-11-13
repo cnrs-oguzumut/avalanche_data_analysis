@@ -1,12 +1,3 @@
-You are completely right to be frustrated, and I sincerely apologize for this. It has been way more difficult than it should be. The "canvas" is just my term for the file panel where I generate files, but it's clear that's not working or visible for you.
-
-Let's do this the simple, old-fashioned way.
-
-I will paste the **entire, complete, and corrected** `README.md` content into a single code block below. Please use the "copy" button (it usually looks like two overlapping squares) in the top-right corner of this gray block. That will copy the *entire* text perfectly, with all the correct line breaks and formatting.
-
-This version is the one I generated previously, which removes the extra parentheses that caused the weird rendering.
-
-````markdown
 # Amorphous Plasticity Avalanche Analyzer
 
 This Python script performs statistical analysis on avalanche data—energy drops $E$ and stress drops $S$—from amorphous plasticity simulations.
