@@ -1,204 +1,283 @@
-# Amorphous Plasticity Avalanche Analyzer
+# Avalanche Statistics Analysis for Materials
 
-This Python script performs statistical analysis on avalanche data—energy drops $E$ and stress drops $S$—from amorphous plasticity simulations.
+A comprehensive Python tool for analyzing avalanche statistics in materials undergoing plastic deformation, with support for critical point detection and before/after transition analysis.
 
-It reads one or more simulation log files, filters the data based on user-defined criteria, and generates plots, binned data, and fit parameters.
+## Overview
 
-## 🚀 Features
+This tool analyzes energy and stress avalanches from mechanical simulations of crystalline and architected materials. It provides:
 
-* **Avalanche Distributions:** Generates log-log histograms for energy $E$ and stress $S$ avalanches.
-* **Scaling Exponents:** Fits distributions to a truncated power law $P(x) \sim x^{-\epsilon} e^{-\lambda x}$ to find the exponent $\epsilon$.
-* **Energy-Stress Scaling:** Calculates the scaling exponent $\gamma$ from the relationship $E \sim S^\gamma$ by fitting binned log-log data.
-* **Inter-Event Distributions:** Analyzes the distribution of $\Delta\alpha$ (e.g., change in strain) between consecutive avalanche events.
+- **Power-law distribution analysis** with truncated exponential cutoffs
+- **Critical point detection** based on maximum energy
+- **Before/after transition analysis** to study regime changes during deformation
+- **Energy-stress scaling relationships** (E ~ S^γ)
+- **Time-between-events statistics** (Δα distributions)
+- **Comprehensive visualization** with comparison plots
 
-## 📋 Prerequisites
+Perfect for studying:
+- Plasticity in crystals and amorphous materials
+- Shear band formation and localization
+- Avalanche behavior and critical phenomena
+- Transitions from elastic to plastic regimes
 
-The script requires the following Python libraries:
+## Features
 
-* `numpy`
-* `matplotlib`
-* `scipy`
+### Core Analysis Capabilities
 
-You can install them using `pip`:
+1. **Avalanche Size Distributions**
+   - Logarithmic binning for power-law analysis
+   - Truncated power-law fitting: P(x) = A·x^(-ε)·exp(-λx)
+   - Automatic parameter estimation with uncertainty quantification
 
-```bash
+2. **Critical Point Analysis**
+   - Automatic detection of critical α (maximum energy point)
+   - Split analysis for before/after transition regimes
+   - Separate statistics for pre-critical and post-critical behavior
+
+3. **Energy-Stress Scaling**
+   - Power-law scaling analysis: E ~ S^γ
+   - Binned analysis with error bars
+   - Comparison of scaling exponents across regimes
+
+4. **Inter-event Statistics**
+   - Δα (time between events) distributions
+   - Both logarithmic and linear binning options
+   - Power-law analysis of event clustering
+
+5. **Comprehensive Visualization**
+   - Time series plots with running averages
+   - Distribution comparison plots (before/after/full)
+   - Scaling relationship visualizations
+   - Combined multi-panel figures
+
+## Installation
+
+### Requirements
+
+python >= 3.7
+numpy >= 1.19
+matplotlib >= 3.3
+scipy >= 1.5
+
+### Quick Install
+
+git clone https://github.com/cnrs-oguzumut/avalanche_data_analysis.git
+cd avalanche_data_analysis
+pip install -r requirements.txt
+
+Or install dependencies manually:
 pip install numpy matplotlib scipy
-````
 
-## 📁 File Structure
+## Usage
 
-The script is designed to work with the following directory structure:
+### Basic Usage
 
-```
-project_folder/
-│
-├── analyze_avalanches.py     # <-- The analysis script
-│
-├── build1/                   # <-- Simulation 1 output
-│   └── energy_stress_log.csv
-├── build2/                   # <-- Simulation 2 output
-│   └── energy_stress_log.csv
-├── ...
-│
-└── statistics/               # <-- Output directory (created by the script)
-    ├── all_distributions.png
-    ├── fit_parameters.txt
-    ├── data_histogram_energy.dat
-    └── ...
-```
+python avalanche_analysis.py
 
-## ⌨️ Input Data Format
+The script will:
+1. Search for energy_stress_log.csv files in ./build* directories
+2. Process and combine all datasets
+3. Perform statistical analysis
+4. Generate plots and save results to ./statistics/
 
-The script reads `energy_stress_log.csv` files with a specific format:
+### Input Data Format
 
-  * **Comma-separated** (CSV).
-  * The first row (header) is **skipped**.
-  * The script expects the following columns:
-      * `alpha` (Column index 1)
-      * `energy_change` (Column index 6)
-      * `stress_change` (Column index 7)
-      * `plasticity_flag` (Column index 8)
+Your CSV file should have the following structure:
 
------
+step,alpha,energy_total,stress_total,energy_cumul,stress_cumul,energy_change,stress_change,plasticity_flag
+0,0.000000,1.234e-05,2.345e+01,1.234e-05,2.345e+01,0.000e+00,0.000e+00,0
+1,0.000100,1.235e-05,2.346e+01,1.235e-05,2.346e+01,1.000e-07,1.000e-01,1
 
-## ⚙️ How to Use
+**Columns used:**
+- alpha (column 2): Loading parameter
+- energy_cumul (column 5): Cumulative energy (for time series)
+- stress_cumul (column 6): Cumulative stress (for time series)
+- energy_change (column 7): Energy avalanche size
+- stress_change (column 8): Stress drop size
+- plasticity_flag (column 9): 1 for plastic events, 0 for elastic
 
-### 1\. Place Your Data
+## Configuration
 
-Arrange your simulation output files as shown in the **File Structure** section.
+Edit the CONFIG dictionary in main() to customize analysis:
 
-### 2\. Configure the Script
+### Key Configuration Options
 
-Open `analyze_avalanches.py` and edit the `CONFIG` dictionary located inside the `main()` function.
+**Split Mode (SPLIT_BY_MAX_ENERGY)**
+- True: Analyze separately before and after maximum energy point
+- False: Analyze full dataset only
 
-```python
-def main():
-    # ===== CONFIGURATION =====
-    CONFIG = {
-        'USE_MULTIPLE_FILES': True,
-        'FILE_PATTERN': "./build*/energy_stress_log.csv",
-        'SINGLE_FILE': "energy_stress_log.csv",
-        'OUTPUT_DIR': './statistics',
-        'SHOW_PLOTS': True, 
-        
-        'FILTERS': {
-            'BY_PLASTICITY': False,
-            'BY_ALPHA': True,
-            'ALPHA_MIN': 0.1401,
-            'ALPHA_MAX': 0.4,
-            # ... etc ...
-        },
-        
-        'ANALYSIS': {
-            'FIT_DATA': True,
-            'FIT_METHOD': 'logspace',
-            # ... etc ...
-        }
-    }
-    # =========================
-    
-    # ... (rest of the script) ...
-```
+**Filters**
+- BY_PLASTICITY: Only analyze plastic events (flag = 1)
+- BY_ALPHA: Restrict analysis to specific loading range
+- BY_XMIN/BY_XMAX: Apply threshold filters to avalanche sizes
 
-See the **Configuration Details** section below for a full explanation of each parameter.
+**Analysis Methods**
+- FIT_METHOD = 'logspace': Standard log-space fitting (recommended)
+- FIT_METHOD = 'weighted': Weighted fitting for emphasis on specific regions
 
-### 3\. Run the Script
+## Outputs
 
-Execute the script from your terminal:
+### Directory Structure
 
-```bash
-python analyze_avalanches.py
-```
+statistics/
+├── critical_alphas_*.txt                    # Critical α values for each dataset
+├── fit_parameters_*.txt                     # All fit parameters (ε, λ, γ)
+├── data_histogram_energy_*.dat              # Binned energy distributions
+├── data_histogram_stress_*.dat              # Binned stress distributions
+├── data_histogram_dalpha_log_*.dat          # Δα distributions
+├── data_energy_vs_stress_binned_*.dat       # E-S scaling (binned)
+├── data_energy_vs_stress_raw_*.dat          # E-S scaling (raw)
+├── *_before_*.dat                           # Before critical α data
+├── *_after_*.dat                            # After critical α data
+├── alpha_vs_energy_timeseries_*.png         # Time series plots
+├── alpha_vs_stress_timeseries_*.png
+├── energy_comparison_*.png                  # Before/after/full comparisons
+├── stress_comparison_*.png
+├── energy_vs_stress_scaling_comparison_*.png
+└── all_distributions_*.png                  # Combined overview
 
-The script will print its progress, including file processing, filtering results, and fitted parameters.
+### Fit Parameters File
 
------
+Example output from fit_parameters_*.txt:
 
-## 🔧 Configuration Details
+============================================================
+TRUNCATED POWER LAW FIT PARAMETERS
+============================================================
+Truncated Power Law Fit: P(x) = A * x^(-epsilon) * exp(-lambda * x)
+Fitting method: logspace
 
-All settings are controlled by the `CONFIG` dictionary.
+============================================================
+FULL DATASET
+============================================================
+ENERGY:
+  A       = 1.234567e+02 ± 5.678901e+00
+  epsilon = 1.45 ± 0.03
+  lambda  = 2.345678e+02 ± 1.234567e+01
 
-### Main Settings
+STRESS:
+  A       = 9.876543e+01 ± 4.321098e+00
+  epsilon = 1.52 ± 0.04
+  lambda  = 1.234567e+02 ± 6.789012e+00
 
-  * `USE_MULTIPLE_FILES` (bool):
-      * `True`: Processes and combines all files matching `FILE_PATTERN`.
-      * `False`: Analyzes only the single file specified in `SINGLE_FILE`.
-  * `FILE_PATTERN` (str): The [glob pattern](https://en.wikipedia.org/wiki/Glob_\(programming\)) to find files when `USE_MULTIPLE_FILES = True`.
-  * `SINGLE_FILE` (str): The path to a single file to use when `USE_MULTIPLE_FILES = False`.
-  * `OUTPUT_DIR` (str): Directory to save all plots and data. It will be created if it doesn't exist.
-  * `SHOW_PLOTS` (bool): If `True`, `plt.show()` will be called at the end to display the combined plot.
+============================================================
+ENERGY-STRESS SCALING PARAMETERS
+============================================================
+Power Law Scaling: E ~ S^γ (log10(E) = γ * log10(S) + intercept)
 
-### `FILTERS` Dictionary
+E-S SCALING (FULL):
+  gamma (γ)  = 1.234567
+  intercept  = -2.345678
+  R²         = 0.987654
 
-This nested dictionary controls all data filtering.
+## Scientific Background
 
-  * `BY_PLASTICITY` (bool): If `True`, only includes data rows where `plasticity_flag == 1`.
-  * `BY_ALPHA` (bool): If `True`, only includes data from the specified `[ALPHA_MIN, ALPHA_MAX]` range.
-  * `ALPHA_MIN`, `ALPHA_MAX` (float): The min/max `alpha` values to include.
-  * `BY_XMIN`, `BY_XMAX` (bool): These apply to the *positive avalanche data*. They set a minimum/maximum size for avalanches to be included in the histograms and fits.
-  * `ENERGY_XMIN`, `STRESS_XMIN` (float): Minimum $E$ or $S$ to be included.
-  * `ENERGY_XMAX`, `STRESS_XMAX` (float): Maximum $E$ or $S$ to be included.
+### Avalanche Statistics in Materials
 
-### `ANALYSIS` Dictionary
+When materials undergo plastic deformation, they often exhibit avalanche-like behavior where stress and energy are released in discrete bursts. These avalanches follow power-law statistics with exponential cutoffs.
 
-This nested dictionary controls the analysis and fitting parameters.
+### Critical Transitions
 
-  * `FIT_DATA` (bool): If `True`, fits the Energy and Stress distributions.
-  * `FIT_METHOD` (str): Method for fitting. Currently `logspace` (default) or `weighted`.
-  * `ANALYZE_ALPHA_DIFF` (bool): If `True`, calculates and plots the `delta_alpha` (inter-event) distribution.
-  * `FIT_ALPHA_DIFF` (bool): If `True`, attempts to fit the `delta_alpha` distribution.
-  * `NBIN` (int): Number of bins for logarithmic histograms ($E$, $S$, $\Delta\alpha$-log).
-  * `NBIN_LINEAR` (int): Number of bins for the linear $\Delta\alpha$ histogram.
-  * `NBIN_SCALING` (int): Number of bins to use for the $E \sim S^\gamma$ scaling analysis.
+The critical α (maximum energy point) often corresponds to:
+- Transition from elastic to plastic regime
+- Onset of shear band localization
+- System-spanning avalanches
 
------
-
-## 📈 Output
-
-All results are saved in the directory specified by `OUTPUT_DIR` (e.g., `./statistics/`). File names are appended with suffixes based on the filters used.
-
-### 📊 Plots (`.png`)
-
-  * `energy_vs_stress_scaling*.png`: Log-log plot showing $E$ vs. $S$. Includes raw data, binned averages, and the linear fit for $\gamma$.
-  * `energy_distribution*.png`: Log-log plot of the energy avalanche distribution, $P(E)$, with its fit.
-  * `stress_distribution*.png`: Log-log plot of the stress avalanche distribution, $P(S)$, with its fit.
-  * `dalpha_distribution_log*.png`: Log-log plot of the inter-event ($\Delta\alpha$) distribution.
-  * `dalpha_distribution_linear*.png`: Linear plot of the $\Delta\alpha$ distribution.
-  * `all_distributions*.png`: A single summary image combining all distribution plots.
-
-### 💾 Data Files (`.dat`)
-
-These files contain the processed data used to generate the plots.
-
-  * `data_energy_vs_stress_raw*.dat`: The raw, paired $\log_{10}(S)$, $\log_{10}(E)$ data.
-  * `data_energy_vs_stress_binned*.dat`: The binned $\log_{10}(S)$, $\log_{10}(E)_{\text{mean}}$, $\log_{10}(E)_{\text{std}}$, `count` data.
-  * `data_histogram_energy*.dat`: The binned $\log_{10}(E)$, $\log_{10}(P(E))$ data.
-  * `data_histogram_stress*.dat`: The binned $\log_{10}(S)$, $\log_{10}(P(S))$ data.
-  * `data_histogram_dalpha_log*.dat`: The log-binned $\log_{10}(\Delta\alpha)$, $\log_{10}(P(\Delta\alpha))$ data.
-  * `data_histogram_dalpha_linear*.dat`: The linearly-binned $\Delta\alpha$, $P(\Delta\alpha)$ data.
-
-### 📝 Fit Results (`.txt`)
-
-  * `fit_parameters*.txt`: A text file summarizing the fitted parameters ($\epsilon$, $\lambda$, $A$) for the Energy, Stress, and $\Delta\alpha$ distributions.
-
------
-
-## 🔬 Analysis Details
-
-### Truncated Power Law
-
-The script fits distributions to the following function:
-$$P(x) = A \cdot x^{-\epsilon} \cdot \exp(-\lambda x)$$
-where:
-
-  * $\epsilon$ (`epsilon`) is the power-law exponent.
-  * $\lambda$ (`lambda_`) is the exponential cutoff parameter.
-  * $A$ (`A`) is the normalization constant.
+Analyzing before/after this transition reveals:
+- Changes in avalanche statistics (ε, λ parameters)
+- Evolution of energy-stress coupling (γ exponent)
+- Transformation of inter-event timing (Δα distributions)
 
 ### Energy-Stress Scaling
 
-The script determines the exponent $\gamma$ by fitting a line to the binned data in log-log space:
-$$\log_{10}(E) = \gamma \cdot \log_{10}(S) + C$$
+The relationship between energy and stress drops:
 
-```
-```
+E ~ S^γ
+
+- γ < 1: Energy-efficient avalanches
+- γ = 1: Linear coupling
+- γ > 1: Energy-intensive avalanches
+
+Changes in γ at the critical point indicate fundamental shifts in deformation mechanisms.
+
+## Examples
+
+### Example 1: Basic Analysis
+
+# Analyze single file
+CONFIG['USE_MULTIPLE_FILES'] = False
+CONFIG['SINGLE_FILE'] = 'my_simulation.csv'
+CONFIG['SPLIT_BY_MAX_ENERGY'] = False
+
+### Example 2: Multiple Simulations with Split Analysis
+
+# Analyze all simulations in build directories
+CONFIG['USE_MULTIPLE_FILES'] = True
+CONFIG['FILE_PATTERN'] = './build*/energy_stress_log.csv'
+CONFIG['SPLIT_BY_MAX_ENERGY'] = True
+
+### Example 3: Focused Analysis on Plastic Events
+
+CONFIG['FILTERS']['BY_PLASTICITY'] = True
+CONFIG['FILTERS']['BY_ALPHA'] = True
+CONFIG['FILTERS']['ALPHA_MIN'] = 0.1
+CONFIG['FILTERS']['ALPHA_MAX'] = 0.5
+
+## Troubleshooting
+
+**Problem: No data after filtering**
+Solution: Check filter thresholds (ALPHA_MIN, ALPHA_MAX, XMIN values)
+         Verify plasticity flags are correctly set in input data
+
+**Problem: Fitting fails**
+Solution: Try switching FIT_METHOD between 'logspace' and 'weighted'
+         Increase NBIN for better statistics
+         Check if data has sufficient range for power-law fit
+
+**Problem: Memory issues with large datasets**
+Solution: Process files individually (USE_MULTIPLE_FILES = False)
+         Reduce NBIN_LINEAR for Δα analysis
+         Use stricter filters to reduce data volume
+
+## Citation
+
+If you use this tool in your research, please cite:
+
+@software{avalanche_analysis,
+  author = {Umut, Oguz},
+  title = {Avalanche Statistics Analysis for Materials},
+  year = {2024},
+  url = {https://github.com/cnrs-oguzumut/avalanche_data_analysis}
+}
+
+## Related Publications
+
+This tool was developed as part of research on:
+- "Mechanics of Displacive Instabilities in Solids" - HDR Thesis (in preparation)
+- "Quasi-amorphous Crystals: Bridging Crystal Plasticity and Amorphous Materials" - Physical Review Letters (in preparation)
+
+## Contributing
+
+Contributions are welcome! Please:
+1. Fork the repository
+2. Create a feature branch
+3. Submit a pull request
+
+For bug reports or feature requests, open an issue on GitHub.
+
+## License
+
+MIT License - see LICENSE file for details
+
+## Author
+
+**Oguz Umut**  
+Chargé de Recherche CNRS  
+LSPM Laboratory (Université Sorbonne Paris Nord)
+
+## Acknowledgments
+
+This work was supported by CNRS and developed as part of research at LSPM laboratory.
+
+---
+
+**Version:** 2.0 (with critical point analysis)  
+**Last Updated:** November 2024
