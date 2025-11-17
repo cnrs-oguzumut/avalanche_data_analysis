@@ -5,6 +5,8 @@ import matplotlib.pyplot as plt
 from scipy.optimize import curve_fit, minimize
 import os
 import glob
+import shutil
+
 
 # =============================================================================
 # == DATA IO FUNCTIONS
@@ -70,14 +72,6 @@ def load_and_process_data(filenames, config):
         if len(alpha) == 0:
             continue
         
-        # NEW: Store UNFILTERED raw time series data (columns B, 5, 6) for time series plots
-        time_series_data.append({
-            'filename': filename,
-            'alpha': alpha.copy(),
-            'energy': energy.copy(),     # Column 5 (index 4)
-            'stress': stress.copy(),     # Column 6 (index 5)
-        })
-            
         # Apply common filters (for statistical analysis only, using columns 6 and 7)
         mask = np.ones(len(alpha), dtype=bool)
         
@@ -93,28 +87,36 @@ def load_and_process_data(filenames, config):
         stress_change_filtered = stress_change[mask]
         alpha_filtered = alpha[mask]
         
+        # NEW: Track indices of accepted avalanches for visualization
+        original_indices = np.arange(len(alpha))
+        filtered_indices = original_indices[mask]
+        
         # --- Stream 1 & 2: Energy Distribution & Delta Alpha ---
         # These are linked, as delta_alpha is based on accepted energy avalanches
         
         positive_energy_mask = energy_change_filtered > 0
         alpha_for_energy = alpha_filtered[positive_energy_mask]
         energy_data = energy_change_filtered[positive_energy_mask]
+        accepted_energy_indices = filtered_indices[positive_energy_mask]
         
         # Apply xmin/xmax filters
         if cfg_filters['BY_XMIN']:
             energy_xmin_mask = energy_data >= cfg_filters['ENERGY_XMIN']
             alpha_for_energy = alpha_for_energy[energy_xmin_mask]
             energy_data = energy_data[energy_xmin_mask]
+            accepted_energy_indices = accepted_energy_indices[energy_xmin_mask]
         
         if cfg_filters['BY_XMAX']:
             energy_xmax_mask = energy_data <= cfg_filters['ENERGY_XMAX']
             alpha_for_energy = alpha_for_energy[energy_xmax_mask]
             energy_data = energy_data[energy_xmax_mask]
+            accepted_energy_indices = accepted_energy_indices[energy_xmax_mask]
         
         # Compute delta_alpha for THIS simulation only
         if len(alpha_for_energy) > 1:
             all_delta_alpha.append(np.diff(alpha_for_energy))
-        
+        print(f"    Accepted energy avalanches: {alpha_for_energy}")
+        print(f"    Accepted all_delta_alpha avalanches: {all_delta_alpha}")
         all_energy_data.append(energy_data)
 
         # --- Stream 3: Stress Distribution ---
@@ -122,12 +124,17 @@ def load_and_process_data(filenames, config):
         
         positive_stress_mask = stress_change_filtered > 0
         stress_data = stress_change_filtered[positive_stress_mask]
+        accepted_stress_indices = filtered_indices[positive_stress_mask]
         
         if cfg_filters['BY_XMIN']:
-            stress_data = stress_data[stress_data >= cfg_filters['STRESS_XMIN']]
+            stress_xmin_mask = stress_data >= cfg_filters['STRESS_XMIN']
+            stress_data = stress_data[stress_xmin_mask]
+            accepted_stress_indices = accepted_stress_indices[stress_xmin_mask]
         
         if cfg_filters['BY_XMAX']:
-            stress_data = stress_data[stress_data <= cfg_filters['STRESS_XMAX']]
+            stress_xmax_mask = stress_data <= cfg_filters['STRESS_XMAX']
+            stress_data = stress_data[stress_xmax_mask]
+            accepted_stress_indices = accepted_stress_indices[stress_xmax_mask]
             
         all_stress_data.append(stress_data)
         
@@ -150,6 +157,16 @@ def load_and_process_data(filenames, config):
         
         all_paired_energy.append(energy_paired[pair_mask])
         all_paired_stress.append(stress_paired[pair_mask])
+        
+        # NEW: Store UNFILTERED raw time series data WITH accepted avalanche indices
+        time_series_data.append({
+            'filename': filename,
+            'alpha': alpha.copy(),
+            'energy': energy.copy(),     # Column 5 (index 4)
+            'stress': stress.copy(),     # Column 6 (index 5)
+            'accepted_energy_indices': accepted_energy_indices,  # NEW
+            'accepted_stress_indices': accepted_stress_indices,  # NEW
+        })
     
     # Combine all arrays from all files
     raw_data = {
@@ -171,6 +188,7 @@ def load_and_process_data(filenames, config):
     print(f"{'='*60}\n")
     
     return raw_data
+
 
 
 # =============================================================================
@@ -207,9 +225,24 @@ def compute_running_average(x, y, window_size):
     return np.array(x_avg), np.array(y_avg)
 
 
-def logarithmic_binning(data, nbin=14, xmin=None, xmax=None):
+def logarithmic_binning(data, nbin=14, xmin=None, xmax=None, density=True, padding=0.01):
     """
-    Perform logarithmic binning exactly as shown by user
+    Perform logarithmic binning
+    
+    Parameters:
+    -----------
+    data : array-like
+        Input data to bin
+    nbin : int
+        Number of bins
+    xmin : float, optional
+        Minimum value for binning range
+    xmax : float, optional
+        Maximum value for binning range
+    density : bool
+        If True, returns probability density. If False, returns counts/bin_width
+    padding : float
+        Fraction of log-range to add as buffer on each side (default 0.05 = 5%)
     """
     # Filter: keep only positive values
     data = data[data > 0]
@@ -222,12 +255,24 @@ def logarithmic_binning(data, nbin=14, xmin=None, xmax=None):
         xmin = np.min(data)
     if xmax is None:
         xmax = np.max(data)
+
+    print(f"    Log-binning range: xmin={xmin:.6e}, xmax={xmax:.6e}")
+
     
-    # Create logarithmic bins - exactly as user showed
-    bins = np.logspace(np.log10(xmin), np.log10(xmax), nbin+1)
+    # Convert to log space for padding
+    log_xmin = np.log10(xmin)
+    log_xmax = np.log10(xmax)
+    
+    # Add buffer zone (padding) to log-range
+    log_range = log_xmax - log_xmin
+    log_xmin -= padding * log_range
+    log_xmax += padding * log_range
+    
+    # Create logarithmic bins with padded range
+    bins = np.logspace(log_xmin, log_xmax, nbin+1)
     
     # Compute histogram
-    hist, bin_edges = np.histogram(data, bins=bins, density=True)
+    hist, bin_edges = np.histogram(data, bins=bins, density=density)
     
     # Compute bin centers (arithmetic mean)
     bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2
@@ -241,10 +286,24 @@ def logarithmic_binning(data, nbin=14, xmin=None, xmax=None):
     
     return bin_centers, hist, log_bin_centers, log_hist, dx
 
-
-def linear_binning(data, nbin=20, xmin=None, xmax=None):
+def linear_binning(data, nbin=20, xmin=None, xmax=None, density=True, padding=0.05):
     """
     Perform linear binning for data
+    
+    Parameters:
+    -----------
+    data : array-like
+        Input data to bin
+    nbin : int
+        Number of bins
+    xmin : float, optional
+        Minimum value for binning range
+    xmax : float, optional
+        Maximum value for binning range
+    density : bool
+        If True, returns probability density. If False, returns counts/bin_width
+    padding : float
+        Fraction of range to add as buffer on each side (default 0.05 = 5%)
     """
     # Filter: keep only positive values
     data = data[data > 0]
@@ -258,11 +317,17 @@ def linear_binning(data, nbin=20, xmin=None, xmax=None):
     if xmax is None:
         xmax = np.max(data)
     
+    print(f"    Linear-binning range: xmin={xmin:.6e}, xmax={xmax:.6e}")
+    # Add buffer zone (padding) to range
+    data_range = xmax - xmin
+    xmin -= padding * data_range
+    xmax += padding * data_range
+    
     # Create linear bins
     bins = np.linspace(xmin, xmax, nbin+1)
     
     # Compute histogram
-    hist, bin_edges = np.histogram(data, bins=bins, density=False)
+    hist, bin_edges = np.histogram(data, bins=bins, density=density)
     
     # Compute bin centers (arithmetic mean)
     bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2
@@ -271,7 +336,6 @@ def linear_binning(data, nbin=20, xmin=None, xmax=None):
     dx = bin_edges[1:] - bin_edges[:-1]
     
     return bin_centers, hist, dx
-
 
 def truncated_powerlaw(x, A, epsilon, lambda_):
     """
@@ -509,14 +573,18 @@ def run_analyses(raw_data, config):
             if len(positive_delta_alpha) > 0:
                 # Logarithmic binning
                 print("\n  Logarithmic Binning (Δα)...")
-                log_bin_results = logarithmic_binning(positive_delta_alpha, nbin=cfg_analysis['NBIN'])
+                #filtered_delta_alpha = np.partition(positive_delta_alpha, 1)[1:]
+                #filtered_delta_alpha = positive_delta_alpha[positive_delta_alpha >= 0.0001]
+                filtered_delta_alpha = positive_delta_alpha
+                print(f"    Final positive delta_alpha range: [{np.min(positive_delta_alpha):.6e}, {np.max(positive_delta_alpha):.6e}]")
+                log_bin_results = logarithmic_binning(filtered_delta_alpha, nbin=cfg_analysis['NBIN'])
                 results['delta_alpha']['log_bins'] = log_bin_results
                 if log_bin_results[0] is None:
                     print("  ERROR: Delta alpha log-binning failed!")
                 
                 # Linear binning
                 print("  Linear Binning (Δα)...")
-                lin_bin_results = linear_binning(positive_delta_alpha, nbin=cfg_analysis['NBIN_LINEAR'])
+                lin_bin_results = linear_binning(positive_delta_alpha, nbin=cfg_analysis['NBIN_LINEAR'],xmin=None,xmax=None,density=True)
                 results['delta_alpha']['lin_bins'] = lin_bin_results
                 if lin_bin_results[0] is None:
                     print("  ERROR: Delta alpha linear-binning failed!")
@@ -663,6 +731,8 @@ def plot_time_series(raw_data, config):
     """
     NEW: Plot alpha vs energy and alpha vs stress time series with running averages.
     Uses UNFILTERED data from columns B (alpha), column 5 (energy), column 6 (stress).
+    Highlights accepted avalanches that passed all filters.
+    Each dataset gets a random color, running averages are transparent.
     """
     print("\n" + "="*50)
     print("GENERATING TIME SERIES PLOTS (UNFILTERED DATA)")
@@ -679,8 +749,9 @@ def plot_time_series(raw_data, config):
     
     window_size = config['ANALYSIS'].get('RUNNING_AVG_WINDOW', 100)
     
-    # Define colors for different files (for running averages)
-    colors = plt.cm.tab10(np.linspace(0, 1, len(time_series_data)))
+    # Generate random colors for different files
+    np.random.seed(12)  # For reproducibility
+    colors = [np.random.rand(3,) for _ in range(len(time_series_data))]
     
     # --- Plot 1: Alpha vs Energy (Column B vs Column 5) ---
     fig1, ax1 = plt.subplots(figsize=(12, 6))
@@ -688,10 +759,22 @@ def plot_time_series(raw_data, config):
     all_alpha_energy = []
     all_energy_values = []
     
-    # Collect all data
+    # Plot each dataset with its own random color
     for idx, data in enumerate(time_series_data):
         alpha = data['alpha']
         energy = data['energy']
+        accepted_indices = data['accepted_energy_indices']
+        filename = os.path.basename(data['filename'])
+        
+        # Plot all data in light gray
+        ax1.plot(alpha, energy, 'o-', markersize=3, alpha=0.3, 
+                color=colors[idx], zorder=1, rasterized=True)
+        
+        # Highlight accepted avalanches with dataset-specific color
+        ax1.scatter(alpha[accepted_indices], energy[accepted_indices], 
+                   s=50, alpha=0.2, color="black", 
+                   label=f'#{idx+1} (accepted)', zorder=2, 
+                   edgecolors=colors[idx], linewidths=.5)
         
         all_alpha_energy.extend(alpha)
         all_energy_values.extend(energy)
@@ -702,30 +785,15 @@ def plot_time_series(raw_data, config):
     
     print(f"  Plotting {len(all_alpha_energy)} raw energy data points...")
     
-    # Plot raw data as scatter - FIRST, so it's in the background
-    ax1.scatter(all_alpha_energy, all_energy_values, s=13, alpha=1., 
-                color='red', label='Raw data', zorder=1, rasterized=True)
-    
-    # Plot running averages with LINES for each file
-    for idx, data in enumerate(time_series_data):
-        alpha = data['alpha']
-        energy = data['energy']
-        filename = os.path.basename(data['filename'])
-        
-        if len(alpha) >= window_size:
-            alpha_avg, energy_avg = compute_running_average(alpha, energy, window_size)
-            ax1.plot(alpha_avg, energy_avg, '-', linewidth=2, color=colors[idx], 
-                    label=f'{filename}', zorder=2)
-    
-    # Plot overall running average with THICK LINE
+    # Plot overall running average with THICK BLACK LINE
     if len(all_alpha_energy) >= window_size:
         alpha_avg_all, energy_avg_all = compute_running_average(all_alpha_energy, all_energy_values, window_size)
-        ax1.plot(alpha_avg_all, energy_avg_all, '-', linewidth=4, color='black', 
+        ax1.plot(alpha_avg_all, energy_avg_all, '-', linewidth=2, color='black', 
                 label='Overall average', zorder=10)
-    
+
     ax1.set_xlabel('α (Loading Parameter - Column B)', fontsize=13, fontweight='bold')
     ax1.set_ylabel('Energy (Column 5)', fontsize=13, fontweight='bold')
-    ax1.set_title('Energy vs Alpha (Unfiltered Time Series)', fontsize=14, fontweight='bold')
+    ax1.set_title('Energy vs Alpha - Accepted Avalanches Highlighted', fontsize=14, fontweight='bold')
     ax1.grid(True, alpha=0.3)
     ax1.legend(loc='best', fontsize=9)
     plt.tight_layout()
@@ -741,10 +809,22 @@ def plot_time_series(raw_data, config):
     all_alpha_stress = []
     all_stress_values = []
     
-    # Collect all data
+    # Plot each dataset with its own random color
     for idx, data in enumerate(time_series_data):
         alpha = data['alpha']
         stress = data['stress']
+        accepted_indices = data['accepted_stress_indices']
+        filename = os.path.basename(data['filename'])
+        
+        # Plot all data in light gray
+        ax2.plot(alpha, stress, 'o-', markersize=3, alpha=0.3, 
+                color=colors[idx], zorder=1, rasterized=True)
+        
+        # Highlight accepted avalanches with dataset-specific color
+        ax2.scatter(alpha[accepted_indices], stress[accepted_indices], 
+                   s=50, alpha=0.3, color=colors[idx], 
+                   label=f'#{idx+1} (accepted)', zorder=2,
+                   edgecolors='black', linewidths=0.5)
         
         all_alpha_stress.extend(alpha)
         all_stress_values.extend(stress)
@@ -755,22 +835,7 @@ def plot_time_series(raw_data, config):
     
     print(f"  Plotting {len(all_alpha_stress)} raw stress data points...")
     
-    # Plot raw data as scatter - FIRST, so it's in the background
-    ax2.scatter(all_alpha_stress, all_stress_values, s=19, alpha=1., 
-                color='red', label='Raw data', zorder=1, rasterized=True)
-    
-    # Plot running averages with LINES for each file
-    for idx, data in enumerate(time_series_data):
-        alpha = data['alpha']
-        stress = data['stress']
-        filename = os.path.basename(data['filename'])
-        
-        if len(alpha) >= window_size:
-            alpha_avg, stress_avg = compute_running_average(alpha, stress, window_size)
-            ax2.plot(alpha_avg, stress_avg, '-', linewidth=2, color=colors[idx], 
-                    label=f'{filename}', zorder=2)
-    
-    # Plot overall running average with THICK LINE
+    # Plot overall running average with THICK BLACK LINE
     if len(all_alpha_stress) >= window_size:
         alpha_avg_all, stress_avg_all = compute_running_average(all_alpha_stress, all_stress_values, window_size)
         ax2.plot(alpha_avg_all, stress_avg_all, '-', linewidth=4, color='black', 
@@ -778,7 +843,7 @@ def plot_time_series(raw_data, config):
     
     ax2.set_xlabel('α (Loading Parameter - Column B)', fontsize=13, fontweight='bold')
     ax2.set_ylabel('Stress (Column 6)', fontsize=13, fontweight='bold')
-    ax2.set_title('Stress vs Alpha (Unfiltered Time Series)', fontsize=14, fontweight='bold')
+    ax2.set_title('Stress vs Alpha - Accepted Avalanches Highlighted', fontsize=14, fontweight='bold')
     ax2.grid(True, alpha=0.3)
     ax2.legend(loc='best', fontsize=9)
     plt.tight_layout()
@@ -787,7 +852,7 @@ def plot_time_series(raw_data, config):
     plt.savefig(plot_path, dpi=200)
     print(f"  Saved: {plot_path}")
     plt.close(fig2)
-
+    
 def generate_plots(raw_data, analysis_results, config):
     """
     Generate and save all plots based on the analysis results.
@@ -1095,17 +1160,17 @@ def main():
         'FILE_PATTERN': "./build*/energy_stress_log.csv",
         'SINGLE_FILE': "energy_stress_log.csv",
         'OUTPUT_DIR': './statistics',
-        'SHOW_PLOTS': True, # Whether to call plt.show() at the end
+        'SHOW_PLOTS': False, # Whether to call plt.show() at the end
         
         'FILTERS': {
             'BY_PLASTICITY': False,
             'BY_ALPHA': True,
-            'ALPHA_MIN': 0.1401,
-            'ALPHA_MAX': 1.,
+            'ALPHA_MIN': 0.4,
+            'ALPHA_MAX': .45,
             
             'BY_XMIN': True,
-            'ENERGY_XMIN': 1e-4,
-            'STRESS_XMIN': 0,
+            'ENERGY_XMIN': 1e-5,
+            'STRESS_XMIN': 1,
             
             'BY_XMAX': False,
             'ENERGY_XMAX': 1e-2,
@@ -1119,16 +1184,22 @@ def main():
             'ANALYZE_ALPHA_DIFF': True,
             'FIT_ALPHA_DIFF': False,
             
-            'NBIN': 10,
-            'NBIN_LINEAR': 30,
-            'NBIN_SCALING': 9,
+            'NBIN': 12,
+            'NBIN_LINEAR': 120,
+            'NBIN_SCALING': 20,
             
-            'RUNNING_AVG_WINDOW': 100,  # Window size for running average in time series plots
+            'RUNNING_AVG_WINDOW': 250,  # Window size for running average in time series plots
         }
     }
     # =========================
     
     # 1. Setup Environment
+
+    if os.path.exists(CONFIG['OUTPUT_DIR']):
+        shutil.rmtree(CONFIG['OUTPUT_DIR'])
+        print(f"Cleaned existing output directory: {CONFIG['OUTPUT_DIR']}")
+
+
     os.makedirs(CONFIG['OUTPUT_DIR'], exist_ok=True)
     print(f"Output directory: {CONFIG['OUTPUT_DIR']}")
     
