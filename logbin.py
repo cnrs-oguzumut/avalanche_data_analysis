@@ -47,10 +47,32 @@ def read_energy_stress_log(filename="energy_stress_log.csv"):
         return (np.array([]), np.array([]), np.array([]), np.array([]), np.array([]), np.array([]))
 
 
+def find_max_energy_alpha(alpha, energy):
+    """
+    Find the alpha value corresponding to the maximum energy.
+    
+    Returns:
+        alpha_max_energy: the alpha value at maximum energy
+        max_energy: the maximum energy value
+        max_idx: the index of the maximum
+    """
+    if len(energy) == 0:
+        return None, None, None
+    
+    max_idx = np.argmax(energy)
+    alpha_max_energy = alpha[max_idx]
+    max_energy = energy[max_idx]
+    
+    return alpha_max_energy, max_energy, max_idx
+
+
 def load_and_process_data(filenames, config):
     """
     Process one or more simulation files, apply filters, and
     return all necessary combined raw data streams for analysis.
+    
+    If SPLIT_BY_MAX_ENERGY is enabled, also returns data split into
+    "before" and "after" the maximum energy alpha for each dataset.
     """
     all_delta_alpha = []
     all_energy_data = []
@@ -58,10 +80,27 @@ def load_and_process_data(filenames, config):
     all_paired_energy = []
     all_paired_stress = []
     
-    # NEW: Store UNFILTERED time series data per file for plotting
+    # For split analysis
+    all_delta_alpha_before = []
+    all_energy_data_before = []
+    all_stress_data_before = []
+    all_paired_energy_before = []
+    all_paired_stress_before = []
+    
+    all_delta_alpha_after = []
+    all_energy_data_after = []
+    all_stress_data_after = []
+    all_paired_energy_after = []
+    all_paired_stress_after = []
+    
+    # Store UNFILTERED time series data per file for plotting
     time_series_data = []
     
+    # Store critical alpha values for each file
+    critical_alphas = []
+    
     cfg_filters = config['FILTERS']
+    split_mode = config.get('SPLIT_BY_MAX_ENERGY', False)
     
     for filename in filenames:
         print(f"  Processing: {filename}")
@@ -71,6 +110,18 @@ def load_and_process_data(filenames, config):
         
         if len(alpha) == 0:
             continue
+        
+        # Find critical alpha (maximum energy point) for this dataset
+        alpha_critical, max_energy, max_idx = find_max_energy_alpha(alpha, energy)
+        
+        if split_mode and alpha_critical is not None:
+            print(f"    Critical α (max energy): {alpha_critical:.6f} (E_max = {max_energy:.6e})")
+            critical_alphas.append({
+                'filename': filename,
+                'alpha_critical': alpha_critical,
+                'max_energy': max_energy,
+                'max_idx': max_idx
+            })
         
         # Apply common filters (for statistical analysis only, using columns 6 and 7)
         mask = np.ones(len(alpha), dtype=bool)
@@ -87,13 +138,11 @@ def load_and_process_data(filenames, config):
         stress_change_filtered = stress_change[mask]
         alpha_filtered = alpha[mask]
         
-        # NEW: Track indices of accepted avalanches for visualization
+        # Track indices of accepted avalanches for visualization
         original_indices = np.arange(len(alpha))
         filtered_indices = original_indices[mask]
         
         # --- Stream 1 & 2: Energy Distribution & Delta Alpha ---
-        # These are linked, as delta_alpha is based on accepted energy avalanches
-        
         positive_energy_mask = energy_change_filtered > 0
         alpha_for_energy = alpha_filtered[positive_energy_mask]
         energy_data = energy_change_filtered[positive_energy_mask]
@@ -112,38 +161,69 @@ def load_and_process_data(filenames, config):
             energy_data = energy_data[energy_xmax_mask]
             accepted_energy_indices = accepted_energy_indices[energy_xmax_mask]
         
-        # Compute delta_alpha for THIS simulation only
+        # Compute delta_alpha for THIS simulation
         if len(alpha_for_energy) > 1:
             all_delta_alpha.append(np.diff(alpha_for_energy))
-        print(f"    Accepted energy avalanches: {alpha_for_energy}")
-        print(f"    Accepted all_delta_alpha avalanches: {all_delta_alpha}")
+        
         all_energy_data.append(energy_data)
 
+        # --- Split analysis: before and after critical alpha ---
+        if split_mode and alpha_critical is not None:
+            # Before critical alpha
+            mask_before = alpha_for_energy < alpha_critical
+            energy_before = energy_data[mask_before]
+            alpha_before = alpha_for_energy[mask_before]
+            
+            if len(alpha_before) > 1:
+                all_delta_alpha_before.append(np.diff(alpha_before))
+            all_energy_data_before.append(energy_before)
+            
+            # After critical alpha
+            mask_after = alpha_for_energy >= alpha_critical
+            energy_after = energy_data[mask_after]
+            alpha_after = alpha_for_energy[mask_after]
+            
+            if len(alpha_after) > 1:
+                all_delta_alpha_after.append(np.diff(alpha_after))
+            all_energy_data_after.append(energy_after)
+            
+            print(f"    Energy avalanches before α_c: {len(energy_before)}, after α_c: {len(energy_after)}")
+
         # --- Stream 3: Stress Distribution ---
-        # Processed independently for its own distribution
-        
         positive_stress_mask = stress_change_filtered > 0
         stress_data = stress_change_filtered[positive_stress_mask]
+        alpha_for_stress = alpha_filtered[positive_stress_mask]
         accepted_stress_indices = filtered_indices[positive_stress_mask]
         
         if cfg_filters['BY_XMIN']:
             stress_xmin_mask = stress_data >= cfg_filters['STRESS_XMIN']
             stress_data = stress_data[stress_xmin_mask]
+            alpha_for_stress = alpha_for_stress[stress_xmin_mask]
             accepted_stress_indices = accepted_stress_indices[stress_xmin_mask]
         
         if cfg_filters['BY_XMAX']:
             stress_xmax_mask = stress_data <= cfg_filters['STRESS_XMAX']
             stress_data = stress_data[stress_xmax_mask]
+            alpha_for_stress = alpha_for_stress[stress_xmax_mask]
             accepted_stress_indices = accepted_stress_indices[stress_xmax_mask]
             
         all_stress_data.append(stress_data)
         
-        # --- Stream 4: Paired E-S Data for Scaling ---
-        # We need events where *both* are positive and pass filters
+        # Split stress data
+        if split_mode and alpha_critical is not None:
+            mask_before = alpha_for_stress < alpha_critical
+            all_stress_data_before.append(stress_data[mask_before])
+            
+            mask_after = alpha_for_stress >= alpha_critical
+            all_stress_data_after.append(stress_data[mask_after])
+            
+            print(f"    Stress avalanches before α_c: {np.sum(mask_before)}, after α_c: {np.sum(mask_after)}")
         
+        # --- Stream 4: Paired E-S Data for Scaling ---
         both_positive_mask = (energy_change_filtered > 0) & (stress_change_filtered > 0)
         energy_paired = energy_change_filtered[both_positive_mask]
         stress_paired = stress_change_filtered[both_positive_mask]
+        alpha_paired = alpha_filtered[both_positive_mask]
         
         # Apply xmin/xmax filters to the pairs
         pair_mask = np.ones(len(energy_paired), dtype=bool)
@@ -158,14 +238,30 @@ def load_and_process_data(filenames, config):
         all_paired_energy.append(energy_paired[pair_mask])
         all_paired_stress.append(stress_paired[pair_mask])
         
-        # NEW: Store UNFILTERED raw time series data WITH accepted avalanche indices
+        # Split paired data
+        if split_mode and alpha_critical is not None:
+            alpha_paired_filtered = alpha_paired[pair_mask]
+            energy_paired_filtered = energy_paired[pair_mask]
+            stress_paired_filtered = stress_paired[pair_mask]
+            
+            mask_before = alpha_paired_filtered < alpha_critical
+            all_paired_energy_before.append(energy_paired_filtered[mask_before])
+            all_paired_stress_before.append(stress_paired_filtered[mask_before])
+            
+            mask_after = alpha_paired_filtered >= alpha_critical
+            all_paired_energy_after.append(energy_paired_filtered[mask_after])
+            all_paired_stress_after.append(stress_paired_filtered[mask_after])
+        
+        # Store UNFILTERED raw time series data WITH accepted avalanche indices
         time_series_data.append({
             'filename': filename,
             'alpha': alpha.copy(),
-            'energy': energy.copy(),     # Column 5 (index 4)
-            'stress': stress.copy(),     # Column 6 (index 5)
-            'accepted_energy_indices': accepted_energy_indices,  # NEW
-            'accepted_stress_indices': accepted_stress_indices,  # NEW
+            'energy': energy.copy(),
+            'stress': stress.copy(),
+            'accepted_energy_indices': accepted_energy_indices,
+            'accepted_stress_indices': accepted_stress_indices,
+            'alpha_critical': alpha_critical,
+            'max_idx': max_idx
         })
     
     # Combine all arrays from all files
@@ -175,8 +271,26 @@ def load_and_process_data(filenames, config):
         'stress': np.concatenate(all_stress_data) if all_stress_data else np.array([]),
         'paired_energy': np.concatenate(all_paired_energy) if all_paired_energy else np.array([]),
         'paired_stress': np.concatenate(all_paired_stress) if all_paired_stress else np.array([]),
-        'time_series': time_series_data  # NEW: UNFILTERED data (col B, 5, 6) for time series plots
+        'time_series': time_series_data,
+        'critical_alphas': critical_alphas
     }
+    
+    # Add split data if enabled
+    if split_mode:
+        raw_data['before'] = {
+            'delta_alpha': np.concatenate(all_delta_alpha_before) if all_delta_alpha_before else np.array([]),
+            'energy': np.concatenate(all_energy_data_before) if all_energy_data_before else np.array([]),
+            'stress': np.concatenate(all_stress_data_before) if all_stress_data_before else np.array([]),
+            'paired_energy': np.concatenate(all_paired_energy_before) if all_paired_energy_before else np.array([]),
+            'paired_stress': np.concatenate(all_paired_stress_before) if all_paired_stress_before else np.array([]),
+        }
+        raw_data['after'] = {
+            'delta_alpha': np.concatenate(all_delta_alpha_after) if all_delta_alpha_after else np.array([]),
+            'energy': np.concatenate(all_energy_data_after) if all_energy_data_after else np.array([]),
+            'stress': np.concatenate(all_stress_data_after) if all_stress_data_after else np.array([]),
+            'paired_energy': np.concatenate(all_paired_energy_after) if all_paired_energy_after else np.array([]),
+            'paired_stress': np.concatenate(all_paired_stress_after) if all_paired_stress_after else np.array([]),
+        }
 
     print(f"\n{'='*60}")
     print(f"COMBINED RESULTS:")
@@ -185,6 +299,17 @@ def load_and_process_data(filenames, config):
     print(f"  Total stress avalanches: {len(raw_data['stress'])}")
     print(f"  Total paired E-S events: {len(raw_data['paired_energy'])}")
     print(f"  Number of time series files: {len(time_series_data)}")
+    
+    if split_mode:
+        print(f"\n  BEFORE CRITICAL α:")
+        print(f"    Energy avalanches: {len(raw_data['before']['energy'])}")
+        print(f"    Stress avalanches: {len(raw_data['before']['stress'])}")
+        print(f"    Paired E-S events: {len(raw_data['before']['paired_energy'])}")
+        print(f"\n  AFTER CRITICAL α:")
+        print(f"    Energy avalanches: {len(raw_data['after']['energy'])}")
+        print(f"    Stress avalanches: {len(raw_data['after']['stress'])}")
+        print(f"    Paired E-S events: {len(raw_data['after']['paired_energy'])}")
+    
     print(f"{'='*60}\n")
     
     return raw_data
@@ -490,138 +615,85 @@ def fit_truncated_powerlaw_with_weights(bin_centers, hist):
         return None, None
 
 
-def run_analyses(raw_data, config):
+def analyze_data_subset(data_subset, config, subset_name=""):
     """
-    Run all statistical analyses (binning, fitting) on the raw data.
-    Returns a dictionary with all analysis results.
+    Run analysis on a subset of data (e.g., before or after critical alpha).
+    Returns analysis results dictionary.
     """
     results = {}
     cfg_analysis = config['ANALYSIS']
+    prefix = f"  [{subset_name}] " if subset_name else "  "
     
     # --- Energy Analysis ---
-    print("\n" + "="*50)
-    print("ANALYZING ENERGY")
-    print("="*50)
+    print(f"{prefix}Analyzing Energy...")
     results['energy'] = {}
-    if len(raw_data['energy']) == 0:
-        print("  No energy data to analyze.")
+    if len(data_subset['energy']) == 0:
+        print(f"{prefix}No energy data.")
         results['energy']['bins'] = (None, None, None, None, None)
     else:
-        print(f"  Final energy range: [{np.min(raw_data['energy']):.6e}, {np.max(raw_data['energy']):.6e}]")
-        bin_results = logarithmic_binning(raw_data['energy'], nbin=cfg_analysis['NBIN'])
+        print(f"{prefix}Energy range: [{np.min(data_subset['energy']):.6e}, {np.max(data_subset['energy']):.6e}]")
+        bin_results = logarithmic_binning(data_subset['energy'], nbin=cfg_analysis['NBIN'])
         results['energy']['bins'] = bin_results
         
-        if bin_results[0] is None:
-            print("  ERROR: Energy binning failed!")
-        else:
-            print(f"  Binned energy data into {len(bin_results[0])} bins.")
-            if cfg_analysis['FIT_DATA']:
-                print("\n  Fitting Energy Data...")
-                fit_func = (fit_truncated_powerlaw_with_weights if cfg_analysis['FIT_METHOD'] == 'weighted' 
-                            else fit_truncated_powerlaw_logspace)
-                popt, perr = fit_func(bin_results[0], bin_results[1])
-                results['energy']['fit'] = (popt, perr)
-                if popt is not None:
-                    print(f"  Fit successful: ε={popt[1]:.4f}, λ={popt[2]:.4e}")
-                else:
-                    print("  Energy fitting failed!")
+        if bin_results[0] is not None and cfg_analysis['FIT_DATA']:
+            fit_func = (fit_truncated_powerlaw_with_weights if cfg_analysis['FIT_METHOD'] == 'weighted' 
+                        else fit_truncated_powerlaw_logspace)
+            popt, perr = fit_func(bin_results[0], bin_results[1])
+            results['energy']['fit'] = (popt, perr)
+            if popt is not None:
+                print(f"{prefix}Energy fit: ε={popt[1]:.4f}, λ={popt[2]:.4e}")
     
     # --- Stress Analysis ---
-    print("\n" + "="*50)
-    print("ANALYZING STRESS")
-    print("="*50)
+    print(f"{prefix}Analyzing Stress...")
     results['stress'] = {}
-    if len(raw_data['stress']) == 0:
-        print("  No stress data to analyze.")
+    if len(data_subset['stress']) == 0:
+        print(f"{prefix}No stress data.")
         results['stress']['bins'] = (None, None, None, None, None)
     else:
-        print(f"  Final stress range: [{np.min(raw_data['stress']):.6e}, {np.max(raw_data['stress']):.6e}]")
-        bin_results = logarithmic_binning(raw_data['stress'], nbin=cfg_analysis['NBIN'])
+        print(f"{prefix}Stress range: [{np.min(data_subset['stress']):.6e}, {np.max(data_subset['stress']):.6e}]")
+        bin_results = logarithmic_binning(data_subset['stress'], nbin=cfg_analysis['NBIN'])
         results['stress']['bins'] = bin_results
         
-        if bin_results[0] is None:
-            print("  ERROR: Stress binning failed!")
-        else:
-            print(f"  Binned stress data into {len(bin_results[0])} bins.")
-            if cfg_analysis['FIT_DATA']:
-                print("\n  Fitting Stress Data...")
-                fit_func = (fit_truncated_powerlaw_with_weights if cfg_analysis['FIT_METHOD'] == 'weighted' 
-                            else fit_truncated_powerlaw_logspace)
-                popt, perr = fit_func(bin_results[0], bin_results[1])
-                results['stress']['fit'] = (popt, perr)
-                if popt is not None:
-                    print(f"  Fit successful: ε={popt[1]:.4f}, λ={popt[2]:.4e}")
-                else:
-                    print("  Stress fitting failed!")
-
+        if bin_results[0] is not None and cfg_analysis['FIT_DATA']:
+            fit_func = (fit_truncated_powerlaw_with_weights if cfg_analysis['FIT_METHOD'] == 'weighted' 
+                        else fit_truncated_powerlaw_logspace)
+            popt, perr = fit_func(bin_results[0], bin_results[1])
+            results['stress']['fit'] = (popt, perr)
+            if popt is not None:
+                print(f"{prefix}Stress fit: ε={popt[1]:.4f}, λ={popt[2]:.4e}")
+    
     # --- Delta Alpha Analysis ---
     results['delta_alpha'] = {}
-    if cfg_analysis['ANALYZE_ALPHA_DIFF']:
-        print("\n" + "="*50)
-        print("ANALYZING ALPHA DIFFERENCES")
-        print("="*50)
-        delta_alpha = raw_data['delta_alpha']
+    if cfg_analysis['ANALYZE_ALPHA_DIFF'] and len(data_subset['delta_alpha']) > 0:
+        print(f"{prefix}Analyzing Delta Alpha...")
+        delta_alpha = data_subset['delta_alpha']
+        positive_delta_alpha = delta_alpha[delta_alpha > 0]
         
-        if len(delta_alpha) == 0:
-            print("  No delta_alpha data to analyze.")
-        else:
-            print(f"  Number of alpha differences: {len(delta_alpha)}")
-            print(f"  Alpha difference range: [{np.min(delta_alpha):.6e}, {np.max(delta_alpha):.6e}]")
-            positive_delta_alpha = delta_alpha[delta_alpha > 0]
-            print(f"  Positive alpha differences: {len(positive_delta_alpha)} / {len(delta_alpha)}")
+        if len(positive_delta_alpha) > 0:
+            filtered_delta_alpha = positive_delta_alpha
+            log_bin_results = logarithmic_binning(filtered_delta_alpha, nbin=cfg_analysis['NBIN'])
+            results['delta_alpha']['log_bins'] = log_bin_results
             
-            if len(positive_delta_alpha) > 0:
-                # Logarithmic binning
-                print("\n  Logarithmic Binning (Δα)...")
-                #filtered_delta_alpha = np.partition(positive_delta_alpha, 1)[1:]
-                #filtered_delta_alpha = positive_delta_alpha[positive_delta_alpha >= 0.0001]
-                filtered_delta_alpha = positive_delta_alpha
-                print(f"    Final positive delta_alpha range: [{np.min(positive_delta_alpha):.6e}, {np.max(positive_delta_alpha):.6e}]")
-                log_bin_results = logarithmic_binning(filtered_delta_alpha, nbin=cfg_analysis['NBIN'])
-                results['delta_alpha']['log_bins'] = log_bin_results
-                if log_bin_results[0] is None:
-                    print("  ERROR: Delta alpha log-binning failed!")
-                
-                # Linear binning
-                print("  Linear Binning (Δα)...")
-                lin_bin_results = linear_binning(positive_delta_alpha, nbin=cfg_analysis['NBIN_LINEAR'],xmin=None,xmax=None,density=True)
-                results['delta_alpha']['lin_bins'] = lin_bin_results
-                if lin_bin_results[0] is None:
-                    print("  ERROR: Delta alpha linear-binning failed!")
-                
-                # Fitting (based on log-binned data)
-                if cfg_analysis['FIT_ALPHA_DIFF'] and log_bin_results[0] is not None:
-                    print("\n  Fitting Delta Alpha Data...")
-                    popt, perr = fit_truncated_powerlaw_logspace(log_bin_results[0], log_bin_results[1])
-                    results['delta_alpha']['fit'] = (popt, perr)
-                    if popt is not None:
-                        print(f"  Fit successful: ε={popt[1]:.4f}, λ={popt[2]:.4e}")
-                    else:
-                        print("  Delta alpha fitting failed!")
-            else:
-                print("  WARNING: No positive alpha differences found!")
+            lin_bin_results = linear_binning(positive_delta_alpha, nbin=cfg_analysis['NBIN_LINEAR'])
+            results['delta_alpha']['lin_bins'] = lin_bin_results
+            
+            if cfg_analysis['FIT_ALPHA_DIFF'] and log_bin_results[0] is not None:
+                popt, perr = fit_truncated_powerlaw_logspace(log_bin_results[0], log_bin_results[1])
+                results['delta_alpha']['fit'] = (popt, perr)
     
-    # --- E-S Scaling Analysis ---
-    print("\n" + "="*50)
-    print("ANALYZING E-S SCALING")
-    print("="*50)
+    # --- E-S Scaling ---
+    print(f"{prefix}Analyzing E-S Scaling...")
     results['scaling'] = {}
-    energy_paired = raw_data['paired_energy']
-    stress_paired = raw_data['paired_stress']
-    
-    if len(energy_paired) < 2:
-        print("  Not enough paired data to analyze scaling.")
-    else:
-        print(f"  Number of paired energy-stress events: {len(energy_paired)}")
+    if len(data_subset['paired_energy']) >= 2:
+        energy_paired = data_subset['paired_energy']
+        stress_paired = data_subset['paired_stress']
+        
         log_stress = np.log10(stress_paired)
         log_energy = np.log10(energy_paired)
         
         stress_min, stress_max = np.min(log_stress), np.max(log_stress)
-        
-        # Create bins for stress
         bins_ES = np.linspace(stress_min, stress_max, cfg_analysis['NBIN_SCALING'] + 1)
         
-        # Compute mean energy for each stress bin
         binned_stress, binned_energy_mean, binned_energy_std, binned_counts = [], [], [], []
         
         for i in range(len(bins_ES) - 1):
@@ -633,29 +705,51 @@ def run_analyses(raw_data, config):
                 binned_energy_std.append(np.std(log_energy[mask]))
                 binned_counts.append(np.sum(mask))
         
-        binned_stress = np.array(binned_stress)
-        binned_energy_mean = np.array(binned_energy_mean)
-        binned_energy_std = np.array(binned_energy_std)
-        binned_counts = np.array(binned_counts)
-        
-        results['scaling']['binned_data'] = (binned_stress, binned_energy_mean, binned_energy_std, binned_counts)
-        
-        # Fit power law: log(E) = γ * log(S) + const
         if len(binned_stress) >= 2:
+            results['scaling']['binned_data'] = (
+                np.array(binned_stress), 
+                np.array(binned_energy_mean), 
+                np.array(binned_energy_std), 
+                np.array(binned_counts)
+            )
+            
             coeffs = np.polyfit(binned_stress, binned_energy_mean, 1)
             gamma, intercept = coeffs[0], coeffs[1]
-            
-            # Compute R²
-            residuals = binned_energy_mean - (gamma * binned_stress + intercept)
+            residuals = binned_energy_mean - (gamma * np.array(binned_stress) + intercept)
             ss_res = np.sum(residuals**2)
             ss_tot = np.sum((binned_energy_mean - np.mean(binned_energy_mean))**2)
             r_squared = 1 - (ss_res / ss_tot)
             
             results['scaling']['fit'] = (gamma, intercept, r_squared)
-            print(f"  E ~ S^γ power law fit: γ = {gamma:.4f}, R² = {r_squared:.4f}")
-        else:
-            print("  Not enough binned data points to fit scaling relationship.")
-            
+            print(f"{prefix}E-S scaling: γ = {gamma:.4f}, R² = {r_squared:.4f}")
+    
+    return results
+
+
+def run_analyses(raw_data, config):
+    """
+    Run all statistical analyses (binning, fitting) on the raw data.
+    If SPLIT_BY_MAX_ENERGY is enabled, also analyzes before/after subsets.
+    """
+    print("\n" + "="*50)
+    print("ANALYZING FULL DATASET")
+    print("="*50)
+    
+    # Analyze full dataset
+    results = analyze_data_subset(raw_data, config)
+    
+    # Analyze split datasets if enabled
+    if config.get('SPLIT_BY_MAX_ENERGY', False):
+        print("\n" + "="*50)
+        print("ANALYZING BEFORE CRITICAL α")
+        print("="*50)
+        results['before'] = analyze_data_subset(raw_data['before'], config, "BEFORE")
+        
+        print("\n" + "="*50)
+        print("ANALYZING AFTER CRITICAL α")
+        print("="*50)
+        results['after'] = analyze_data_subset(raw_data['after'], config, "AFTER")
+    
     return results
 
 # =============================================================================
@@ -666,6 +760,9 @@ def _get_filename_suffix(config):
     """Helper to generate a consistent filename suffix from config."""
     cfg_filters = config['FILTERS']
     filename_suffix = ""
+    
+    if config.get('SPLIT_BY_MAX_ENERGY', False):
+        filename_suffix += "_split"
     
     if cfg_filters['BY_PLASTICITY']:
         filename_suffix += "_plasticity"
@@ -698,7 +795,7 @@ def _get_title_suffix(config):
     
     return title_suffix
 
-def _plot_distribution(ax, bin_results, fit_results, title, xlabel):
+def _plot_distribution(ax, bin_results, fit_results, title, xlabel, color='b', label_prefix=''):
     """Helper to plot a single distribution (energy, stress, or d-alpha)."""
     
     if bin_results[0] is None:
@@ -709,16 +806,18 @@ def _plot_distribution(ax, bin_results, fit_results, title, xlabel):
     centers, hist, log_centers, log_hist, dx = bin_results
     
     mask = (hist > 0) & ~np.isinf(log_hist) & ~np.isnan(log_hist)
+    data_label = f'{label_prefix}Data' if label_prefix else 'Data'
     ax.plot(log_centers[mask], log_hist[mask], 
-            linestyle='None', marker='.', markersize=20, color='b', label='Data')
+            linestyle='None', marker='.', markersize=20, color=color, label=data_label)
     
     if fit_results is not None:
         popt, perr = fit_results
         if popt is not None:
             x_fit = np.logspace(np.log10(centers[mask].min()), np.log10(centers[mask].max()), 100)
             y_fit = truncated_powerlaw(x_fit, *popt)
-            ax.plot(np.log10(x_fit), np.log10(y_fit), 'r-', linewidth=2, 
-                    label=f'Fit: ε={popt[1]:.2f}, λ={popt[2]:.2e}')
+            fit_label = f'{label_prefix}Fit: ε={popt[1]:.2f}, λ={popt[2]:.2e}' if label_prefix else f'Fit: ε={popt[1]:.2f}, λ={popt[2]:.2e}'
+            ax.plot(np.log10(x_fit), np.log10(y_fit), '-', linewidth=2, 
+                    label=fit_label, color=color, linestyle='--')
     
     ax.set_xlabel(xlabel, fontsize=12)
     ax.set_ylabel('log₁₀(Density)', fontsize=12)
@@ -727,21 +826,74 @@ def _plot_distribution(ax, bin_results, fit_results, title, xlabel):
     ax.legend()
 
 
+def plot_scaling_comparison(raw_data, analysis_results, config):
+    """Create comparison plots for E-S scaling before/after critical alpha."""
+    if not config.get('SPLIT_BY_MAX_ENERGY', False):
+        return
+    
+    output_dir = config['OUTPUT_DIR']
+    filename_suffix = _get_filename_suffix(config)
+    
+    fig, axes = plt.subplots(1, 3, figsize=(20, 5))
+    colors = ['blue', 'green', 'red']
+    titles = ['Full Dataset', 'Before α_c', 'After α_c']
+    data_keys = [None, 'before', 'after']
+    
+    for idx, (ax, color, title, data_key) in enumerate(zip(axes, colors, titles, data_keys)):
+        if data_key is None:
+            results = analysis_results['scaling']
+            paired_stress = raw_data['paired_stress']
+            paired_energy = raw_data['paired_energy']
+        else:
+            results = analysis_results.get(data_key, {}).get('scaling', {})
+            paired_stress = raw_data.get(data_key, {}).get('paired_stress', np.array([]))
+            paired_energy = raw_data.get(data_key, {}).get('paired_energy', np.array([]))
+        
+        if 'binned_data' not in results or len(paired_stress) == 0:
+            ax.text(0.5, 0.5, "No data", ha='center', va='center', transform=ax.transAxes)
+            continue
+        
+        ax.plot(np.log10(paired_stress), np.log10(paired_energy), '.', markersize=8, 
+               color=color, alpha=0.2, label='Data', zorder=1)
+        
+        binned_stress, binned_energy_mean, binned_energy_std, _ = results['binned_data']
+        ax.errorbar(binned_stress, binned_energy_mean, yerr=binned_energy_std,
+                   fmt='o', markersize=8, capsize=5, color=color, linewidth=2, 
+                   alpha=0.8, label='Binned', zorder=3)
+        
+        if 'fit' in results:
+            gamma, intercept, r_squared = results['fit']
+            stress_fit = np.linspace(binned_stress.min(), binned_stress.max(), 100)
+            energy_fit = gamma * stress_fit + intercept
+            ax.plot(stress_fit, energy_fit, '--', linewidth=2.5, 
+                   label=f'γ={gamma:.3f}, R²={r_squared:.3f}', color='black', zorder=2)
+            title += f'\nγ = {gamma:.3f}'
+        
+        ax.set_xlabel('log₁₀(Stress)', fontsize=12, fontweight='bold')
+        ax.set_ylabel('log₁₀(Energy)', fontsize=12, fontweight='bold')
+        ax.set_title(f'E-S Scaling - {title}', fontsize=13, fontweight='bold')
+        ax.grid(True, alpha=0.3)
+        ax.legend(fontsize=9)
+    
+    plt.tight_layout()
+    plt.savefig(os.path.join(output_dir, f'energy_vs_stress_scaling_comparison{filename_suffix}.png'), dpi=200)
+    print(f"  Saved E-S scaling comparison")
+    plt.close(fig)
+
 def plot_time_series(raw_data, config):
     """
-    NEW: Plot alpha vs energy and alpha vs stress time series with running averages.
-    Uses UNFILTERED data from columns B (alpha), column 5 (energy), column 6 (stress).
-    Highlights accepted avalanches that passed all filters.
-    Each dataset gets a random color, running averages are transparent.
+    Plot alpha vs energy and alpha vs stress time series with running averages.
+    If SPLIT_BY_MAX_ENERGY is enabled, marks the critical alpha values.
     """
     print("\n" + "="*50)
-    print("GENERATING TIME SERIES PLOTS (UNFILTERED DATA)")
+    print("GENERATING TIME SERIES PLOTS")
     print("="*50)
     
     output_dir = config['OUTPUT_DIR']
     filename_suffix = _get_filename_suffix(config)
     
     time_series_data = raw_data['time_series']
+    split_mode = config.get('SPLIT_BY_MAX_ENERGY', False)
     
     if len(time_series_data) == 0:
         print("  No time series data available.")
@@ -750,50 +902,54 @@ def plot_time_series(raw_data, config):
     window_size = config['ANALYSIS'].get('RUNNING_AVG_WINDOW', 100)
     
     # Generate random colors for different files
-    np.random.seed(12)  # For reproducibility
+    np.random.seed(12)
     colors = [np.random.rand(3,) for _ in range(len(time_series_data))]
     
-    # --- Plot 1: Alpha vs Energy (Column B vs Column 5) ---
+    # --- Plot 1: Alpha vs Energy ---
     fig1, ax1 = plt.subplots(figsize=(12, 6))
     
     all_alpha_energy = []
     all_energy_values = []
     
-    # Plot each dataset with its own random color
     for idx, data in enumerate(time_series_data):
         alpha = data['alpha']
         energy = data['energy']
         accepted_indices = data['accepted_energy_indices']
-        filename = os.path.basename(data['filename'])
         
-        # Plot all data in light gray
         ax1.plot(alpha, energy, 'o-', markersize=3, alpha=0.3, 
                 color=colors[idx], zorder=1, rasterized=True)
         
-        # Highlight accepted avalanches with dataset-specific color
         ax1.scatter(alpha[accepted_indices], energy[accepted_indices], 
                    s=50, alpha=0.2, color="black", 
                    label=f'#{idx+1} (accepted)', zorder=2, 
                    edgecolors=colors[idx], linewidths=.5)
         
+        # Mark critical alpha if in split mode
+        if split_mode and data['alpha_critical'] is not None:
+            ax1.axvline(data['alpha_critical'], color=colors[idx], linestyle='--', 
+                       linewidth=2, alpha=0.7, label=f'#{idx+1} α_c={data["alpha_critical"]:.4f}')
+            # Mark the maximum energy point
+            ax1.scatter([data['alpha_critical']], [energy[data['max_idx']]], 
+                       s=200, marker='*', color='red', edgecolors='black', 
+                       linewidths=2, zorder=5)
+        
         all_alpha_energy.extend(alpha)
         all_energy_values.extend(energy)
     
-    # Convert to numpy arrays
     all_alpha_energy = np.array(all_alpha_energy)
     all_energy_values = np.array(all_energy_values)
     
-    print(f"  Plotting {len(all_alpha_energy)} raw energy data points...")
-    
-    # Plot overall running average with THICK BLACK LINE
     if len(all_alpha_energy) >= window_size:
         alpha_avg_all, energy_avg_all = compute_running_average(all_alpha_energy, all_energy_values, window_size)
         ax1.plot(alpha_avg_all, energy_avg_all, '-', linewidth=2, color='black', 
                 label='Overall average', zorder=10)
 
-    ax1.set_xlabel('α (Loading Parameter - Column B)', fontsize=13, fontweight='bold')
-    ax1.set_ylabel('Energy (Column 5)', fontsize=13, fontweight='bold')
-    ax1.set_title('Energy vs Alpha - Accepted Avalanches Highlighted', fontsize=14, fontweight='bold')
+    ax1.set_xlabel('α (Loading Parameter)', fontsize=13, fontweight='bold')
+    ax1.set_ylabel('Energy', fontsize=13, fontweight='bold')
+    title = 'Energy vs Alpha - Accepted Avalanches'
+    if split_mode:
+        title += ' (Critical α Marked)'
+    ax1.set_title(title, fontsize=14, fontweight='bold')
     ax1.grid(True, alpha=0.3)
     ax1.legend(loc='best', fontsize=9)
     plt.tight_layout()
@@ -803,47 +959,47 @@ def plot_time_series(raw_data, config):
     print(f"  Saved: {plot_path}")
     plt.close(fig1)
     
-    # --- Plot 2: Alpha vs Stress (Column B vs Column 6) ---
+    # --- Plot 2: Alpha vs Stress ---
     fig2, ax2 = plt.subplots(figsize=(12, 6))
     
     all_alpha_stress = []
     all_stress_values = []
     
-    # Plot each dataset with its own random color
     for idx, data in enumerate(time_series_data):
         alpha = data['alpha']
         stress = data['stress']
         accepted_indices = data['accepted_stress_indices']
-        filename = os.path.basename(data['filename'])
         
-        # Plot all data in light gray
         ax2.plot(alpha, stress, 'o-', markersize=3, alpha=0.3, 
                 color=colors[idx], zorder=1, rasterized=True)
         
-        # Highlight accepted avalanches with dataset-specific color
         ax2.scatter(alpha[accepted_indices], stress[accepted_indices], 
                    s=50, alpha=0.3, color=colors[idx], 
                    label=f'#{idx+1} (accepted)', zorder=2,
                    edgecolors='black', linewidths=0.5)
         
+        # Mark critical alpha if in split mode
+        if split_mode and data['alpha_critical'] is not None:
+            ax2.axvline(data['alpha_critical'], color=colors[idx], linestyle='--', 
+                       linewidth=2, alpha=0.7, label=f'#{idx+1} α_c={data["alpha_critical"]:.4f}')
+        
         all_alpha_stress.extend(alpha)
         all_stress_values.extend(stress)
     
-    # Convert to numpy arrays
     all_alpha_stress = np.array(all_alpha_stress)
     all_stress_values = np.array(all_stress_values)
     
-    print(f"  Plotting {len(all_alpha_stress)} raw stress data points...")
-    
-    # Plot overall running average with THICK BLACK LINE
     if len(all_alpha_stress) >= window_size:
         alpha_avg_all, stress_avg_all = compute_running_average(all_alpha_stress, all_stress_values, window_size)
         ax2.plot(alpha_avg_all, stress_avg_all, '-', linewidth=4, color='black', 
                 label='Overall average', zorder=10)
     
-    ax2.set_xlabel('α (Loading Parameter - Column B)', fontsize=13, fontweight='bold')
-    ax2.set_ylabel('Stress (Column 6)', fontsize=13, fontweight='bold')
-    ax2.set_title('Stress vs Alpha - Accepted Avalanches Highlighted', fontsize=14, fontweight='bold')
+    ax2.set_xlabel('α (Loading Parameter)', fontsize=13, fontweight='bold')
+    ax2.set_ylabel('Stress', fontsize=13, fontweight='bold')
+    title = 'Stress vs Alpha - Accepted Avalanches'
+    if split_mode:
+        title += ' (Critical α Marked)'
+    ax2.set_title(title, fontsize=14, fontweight='bold')
     ax2.grid(True, alpha=0.3)
     ax2.legend(loc='best', fontsize=9)
     plt.tight_layout()
@@ -852,7 +1008,65 @@ def plot_time_series(raw_data, config):
     plt.savefig(plot_path, dpi=200)
     print(f"  Saved: {plot_path}")
     plt.close(fig2)
+
+
+def plot_comparison(analysis_results, config, quantity='energy'):
+    """
+    Create comparison plots for before/after critical alpha.
+    """
+    if not config.get('SPLIT_BY_MAX_ENERGY', False):
+        return
     
+    output_dir = config['OUTPUT_DIR']
+    filename_suffix = _get_filename_suffix(config)
+    
+    fig, axes = plt.subplots(1, 3, figsize=(18, 5))
+    
+    # Determine which key to use for bins (delta_alpha uses 'log_bins', others use 'bins')
+    bins_key = 'log_bins' if quantity == 'delta_alpha' else 'bins'
+    
+    # Set appropriate labels
+    if quantity == 'delta_alpha':
+        quantity_label = 'Δα'
+        xlabel = 'log₁₀(Δα)'
+    else:
+        quantity_label = quantity.capitalize()
+        xlabel = f'log₁₀({quantity.capitalize()})'
+    
+    # Full dataset
+    if bins_key in analysis_results.get(quantity, {}):
+        _plot_distribution(axes[0], 
+                          analysis_results[quantity][bins_key],
+                          analysis_results[quantity].get('fit'),
+                          f'{quantity_label} - Full Dataset',
+                          xlabel,
+                          color='blue', label_prefix='')
+    
+    # Before critical alpha
+    if 'before' in analysis_results and bins_key in analysis_results['before'].get(quantity, {}):
+        _plot_distribution(axes[1],
+                          analysis_results['before'][quantity][bins_key],
+                          analysis_results['before'][quantity].get('fit'),
+                          f'{quantity_label} - Before α_c',
+                          xlabel,
+                          color='green', label_prefix='Before ')
+    
+    # After critical alpha
+    if 'after' in analysis_results and bins_key in analysis_results['after'].get(quantity, {}):
+        _plot_distribution(axes[2],
+                          analysis_results['after'][quantity][bins_key],
+                          analysis_results['after'][quantity].get('fit'),
+                          f'{quantity_label} - After α_c',
+                          xlabel,
+                          color='red', label_prefix='After ')
+    
+    plt.tight_layout()
+    plot_path = os.path.join(output_dir, f'{quantity}_comparison{filename_suffix}.png')
+    plt.savefig(plot_path, dpi=200)
+    print(f"  Saved: {plot_path}")
+    plt.close(fig)
+
+
 def generate_plots(raw_data, analysis_results, config):
     """
     Generate and save all plots based on the analysis results.
@@ -866,27 +1080,36 @@ def generate_plots(raw_data, analysis_results, config):
     title_suffix = _get_title_suffix(config)
     
     cfg_analysis = config['ANALYSIS']
+    split_mode = config.get('SPLIT_BY_MAX_ENERGY', False)
     
-    # --- NEW: Time Series Plots (UNFILTERED DATA from columns B, 5, 6) ---
+    # Time Series Plots
     plot_time_series(raw_data, config)
     
+    # If split mode, create comparison plots
+    if split_mode:
+        print("\nGenerating comparison plots (before/after α_c)...")
+        plot_comparison(analysis_results, config, 'energy')
+        plot_comparison(analysis_results, config, 'stress')
+        if cfg_analysis['ANALYZE_ALPHA_DIFF']:
+            plot_comparison(analysis_results, config, 'delta_alpha')
+        plot_scaling_comparison(raw_data, analysis_results, config)  # <-- ADD THIS
+
+    
+    # Original plots (keeping your existing plotting code)
     # --- Plot 0: Energy vs Stress Scaling ---
     if 'binned_data' in analysis_results['scaling']:
         fig0, ax0 = plt.subplots(figsize=(8, 6))
         
-        # Plot raw data
         ax0.plot(np.log10(raw_data['paired_stress']), np.log10(raw_data['paired_energy']), 
                 linestyle='None', marker='.', markersize=12, color='blue', alpha=0.3, 
                 label='Data points', zorder=1)
         
-        # Plot binned data
         binned_stress, binned_energy_mean, binned_energy_std, _ = analysis_results['scaling']['binned_data']
         ax0.errorbar(binned_stress, binned_energy_mean, yerr=binned_energy_std,
                     fmt='o', markersize=8, capsize=5, capthick=2, 
                     color='red', ecolor='darkred', linewidth=2,
                     label='Binned mean ± std', zorder=3)
         
-        # Plot fit
         if 'fit' in analysis_results['scaling']:
             gamma, intercept, r_squared = analysis_results['scaling']['fit']
             stress_fit = np.linspace(np.min(binned_stress), np.max(binned_stress), 100)
@@ -906,10 +1129,7 @@ def generate_plots(raw_data, analysis_results, config):
         print(f"  Saved: {plot_path}")
         plt.close(fig0)
     
-    # --- Plot 1 & 2: Individual Energy and Stress Distributions ---
-    # (These are also part of the combined plot, but saved individually)
-    
-    # Energy
+    # Individual distribution plots
     fig1, ax1 = plt.subplots(figsize=(7, 5))
     _plot_distribution(ax1, analysis_results['energy']['bins'], 
                        analysis_results['energy'].get('fit'),
@@ -921,7 +1141,6 @@ def generate_plots(raw_data, analysis_results, config):
     print(f"  Saved: {plot_path}")
     plt.close(fig1)
 
-    # Stress
     fig2, ax2 = plt.subplots(figsize=(7, 5))
     _plot_distribution(ax2, analysis_results['stress']['bins'], 
                        analysis_results['stress'].get('fit'),
@@ -933,19 +1152,14 @@ def generate_plots(raw_data, analysis_results, config):
     print(f"  Saved: {plot_path}")
     plt.close(fig2)
 
-    # --- Plot 3 & 4: Delta Alpha Distributions ---
+    # Delta Alpha plots
     if cfg_analysis['ANALYZE_ALPHA_DIFF'] and 'log_bins' in analysis_results['delta_alpha']:
-        
-        # Plot 3: Log-Log plot
         fig3, ax3 = plt.subplots(figsize=(7, 5))
-        
-        # Plot log-binned data
         _plot_distribution(ax3, analysis_results['delta_alpha']['log_bins'], 
                            analysis_results['delta_alpha'].get('fit'),
                            'Δα Distribution (Log-Log)' + title_suffix,
                            'log₁₀(Δα)')
         
-        # Overlay linear-binned data
         if 'lin_bins' in analysis_results['delta_alpha']:
             lin_bin_results = analysis_results['delta_alpha']['lin_bins']
             if lin_bin_results[0] is not None:
@@ -961,7 +1175,6 @@ def generate_plots(raw_data, analysis_results, config):
         print(f"  Saved: {plot_path}")
         plt.close(fig3)
 
-        # Plot 4: Linear-binned plot
         if 'lin_bins' in analysis_results['delta_alpha']:
             lin_bin_results = analysis_results['delta_alpha']['lin_bins']
             if lin_bin_results[0] is not None:
@@ -979,7 +1192,7 @@ def generate_plots(raw_data, analysis_results, config):
                 print(f"  Saved: {plot_path}")
                 plt.close(fig4)
 
-    # --- Plot 5: Combined Plot ---
+    # Combined plot
     num_plots = 2
     if cfg_analysis['ANALYZE_ALPHA_DIFF'] and 'log_bins' in analysis_results['delta_alpha']:
         num_plots += 1
@@ -988,26 +1201,22 @@ def generate_plots(raw_data, analysis_results, config):
         
     fig, axes = plt.subplots(1, num_plots, figsize=(6 * num_plots, 5))
     
-    # Energy
     _plot_distribution(axes[0], analysis_results['energy']['bins'], 
                        analysis_results['energy'].get('fit'),
                        'Energy Change Distribution' + title_suffix,
                        'log₁₀(Energy Change)')
     
-    # Stress
     _plot_distribution(axes[1], analysis_results['stress']['bins'], 
                        analysis_results['stress'].get('fit'),
                        'Stress Change Distribution' + title_suffix,
                        'log₁₀(Stress Change)')
 
-    # Delta Alpha (Log)
     if num_plots >= 3:
         _plot_distribution(axes[2], analysis_results['delta_alpha']['log_bins'], 
                            analysis_results['delta_alpha'].get('fit'),
                            'Δα Distribution (Log-Log)' + title_suffix,
                            'log₁₀(Δα)')
     
-    # Delta Alpha (Linear)
     if num_plots == 4:
         lin_bin_results = analysis_results['delta_alpha']['lin_bins']
         if lin_bin_results[0] is not None:
@@ -1024,7 +1233,6 @@ def generate_plots(raw_data, analysis_results, config):
     plt.savefig(combined_plot_path, dpi=150)
     print(f"  Saved combined plot: {combined_plot_path}")
     
-    # Optionally show the final combined plot
     if config['SHOW_PLOTS']:
         plt.show()
     
@@ -1067,6 +1275,19 @@ def _write_fit_params(f, name, fit_results):
     else: f.write("\n\n")
 
 
+def _write_scaling_params(f, name, fit_results):
+    """Helper to write E-S scaling parameters to a file."""
+    if fit_results is None or len(fit_results) != 3:
+        f.write(f"{name}:\n  Fitting failed or was not performed.\n\n")
+        return
+    
+    gamma, intercept, r_squared = fit_results
+    f.write(f"{name}:\n")
+    f.write(f"  gamma (γ)  = {gamma:.6f}\n")
+    f.write(f"  intercept  = {intercept:.6f}\n")
+    f.write(f"  R²         = {r_squared:.6f}\n\n")
+
+
 def save_results(raw_data, analysis_results, config):
     """
     Save all binned data and fit parameters to text files.
@@ -1078,12 +1299,22 @@ def save_results(raw_data, analysis_results, config):
     output_dir = config['OUTPUT_DIR']
     filename_suffix = _get_filename_suffix(config)
     cfg_analysis = config['ANALYSIS']
+    split_mode = config.get('SPLIT_BY_MAX_ENERGY', False)
 
-    # --- Save Binned E-S Scaling Data ---
+    # Save critical alpha values if in split mode
+    if split_mode and 'critical_alphas' in raw_data:
+        filepath = os.path.join(output_dir, f'critical_alphas{filename_suffix}.txt')
+        with open(filepath, 'w') as f:
+            f.write("# Critical alpha values (maximum energy) for each dataset\n")
+            f.write("# Filename, Alpha_critical, Max_Energy, Index\n")
+            for info in raw_data['critical_alphas']:
+                f.write(f"{info['filename']}, {info['alpha_critical']:.8f}, {info['max_energy']:.8e}, {info['max_idx']}\n")
+        print(f"  Saved: {filepath}")
+
+    # Save binned E-S Scaling Data (Full dataset)
     if 'binned_data' in analysis_results['scaling']:
         binned_stress, binned_energy_mean, binned_energy_std, binned_counts = analysis_results['scaling']['binned_data']
         
-        # Save binned data
         filepath = os.path.join(output_dir, f'data_energy_vs_stress_binned{filename_suffix}.dat')
         with open(filepath, 'w') as f:
             f.write("# Binned Energy-Stress relationship\n")
@@ -1092,7 +1323,31 @@ def save_results(raw_data, analysis_results, config):
                 f.write(f"{s:.8e}, {e:.8e}, {std:.8e}, {int(cnt)}\n")
         print(f"  Saved: {filepath}")
     
-    # --- Save Raw E-S Paired Data ---
+    # NEW: Save binned E-S Scaling Data (Before/After) if in split mode
+    if split_mode:
+        # Before critical alpha
+        if 'before' in analysis_results and 'binned_data' in analysis_results['before'].get('scaling', {}):
+            binned_stress, binned_energy_mean, binned_energy_std, binned_counts = analysis_results['before']['scaling']['binned_data']
+            filepath = os.path.join(output_dir, f'data_energy_vs_stress_binned_before{filename_suffix}.dat')
+            with open(filepath, 'w') as f:
+                f.write("# Binned Energy-Stress relationship (BEFORE critical α)\n")
+                f.write("# log10(Stress_center), log10(Energy_mean), log10(Energy_std), count\n")
+                for s, e, std, cnt in zip(binned_stress, binned_energy_mean, binned_energy_std, binned_counts):
+                    f.write(f"{s:.8e}, {e:.8e}, {std:.8e}, {int(cnt)}\n")
+            print(f"  Saved: {filepath}")
+        
+        # After critical alpha
+        if 'after' in analysis_results and 'binned_data' in analysis_results['after'].get('scaling', {}):
+            binned_stress, binned_energy_mean, binned_energy_std, binned_counts = analysis_results['after']['scaling']['binned_data']
+            filepath = os.path.join(output_dir, f'data_energy_vs_stress_binned_after{filename_suffix}.dat')
+            with open(filepath, 'w') as f:
+                f.write("# Binned Energy-Stress relationship (AFTER critical α)\n")
+                f.write("# log10(Stress_center), log10(Energy_mean), log10(Energy_std), count\n")
+                for s, e, std, cnt in zip(binned_stress, binned_energy_mean, binned_energy_std, binned_counts):
+                    f.write(f"{s:.8e}, {e:.8e}, {std:.8e}, {int(cnt)}\n")
+            print(f"  Saved: {filepath}")
+    
+    # Save Raw E-S Paired Data
     if len(raw_data['paired_energy']) > 0:
         filepath = os.path.join(output_dir, f'data_energy_vs_stress_raw{filename_suffix}.dat')
         with open(filepath, 'w') as f:
@@ -1102,24 +1357,20 @@ def save_results(raw_data, analysis_results, config):
                 f.write(f"{np.log10(s):.8e}, {np.log10(e):.8e}\n")
         print(f"  Saved: {filepath}")
 
-    # --- Save Histograms ---
-    # Energy
+    # Save Histograms
     _, _, log_centers, log_hist, _ = analysis_results['energy']['bins']
     filepath = os.path.join(output_dir, f'data_histogram_energy{filename_suffix}.dat')
     _save_histogram_data(filepath, log_centers, log_hist)
 
-    # Stress
     _, _, log_centers, log_hist, _ = analysis_results['stress']['bins']
     filepath = os.path.join(output_dir, f'data_histogram_stress{filename_suffix}.dat')
     _save_histogram_data(filepath, log_centers, log_hist)
 
-    # Delta Alpha (Log)
     if cfg_analysis['ANALYZE_ALPHA_DIFF'] and 'log_bins' in analysis_results['delta_alpha']:
         _, _, log_centers, log_hist, _ = analysis_results['delta_alpha']['log_bins']
         filepath = os.path.join(output_dir, f'data_histogram_dalpha_log{filename_suffix}.dat')
         _save_histogram_data(filepath, log_centers, log_hist)
         
-        # Delta Alpha (Linear)
         if 'lin_bins' in analysis_results['delta_alpha']:
             centers, hist, _ = analysis_results['delta_alpha']['lin_bins']
             if centers is not None:
@@ -1129,21 +1380,95 @@ def save_results(raw_data, analysis_results, config):
                     for x, y in zip(centers, hist):
                         f.write(f"{x:.8e}, {y:.8e}\n")
                 print(f"  Saved: {filepath}")
+    
+    # Save before/after histograms if in split mode
+    if split_mode:
+        print("\n  Saving before/after histogram data...")
+        
+        # Energy - before
+        if 'before' in analysis_results:
+            _, _, log_centers, log_hist, _ = analysis_results['before']['energy']['bins']
+            filepath = os.path.join(output_dir, f'data_histogram_energy_before{filename_suffix}.dat')
+            _save_histogram_data(filepath, log_centers, log_hist)
+            
+            # Stress - before
+            _, _, log_centers, log_hist, _ = analysis_results['before']['stress']['bins']
+            filepath = os.path.join(output_dir, f'data_histogram_stress_before{filename_suffix}.dat')
+            _save_histogram_data(filepath, log_centers, log_hist)
+            
+            # Delta alpha - before
+            if cfg_analysis['ANALYZE_ALPHA_DIFF'] and 'log_bins' in analysis_results['before']['delta_alpha']:
+                _, _, log_centers, log_hist, _ = analysis_results['before']['delta_alpha']['log_bins']
+                filepath = os.path.join(output_dir, f'data_histogram_dalpha_log_before{filename_suffix}.dat')
+                _save_histogram_data(filepath, log_centers, log_hist)
+        
+        # Energy - after
+        if 'after' in analysis_results:
+            _, _, log_centers, log_hist, _ = analysis_results['after']['energy']['bins']
+            filepath = os.path.join(output_dir, f'data_histogram_energy_after{filename_suffix}.dat')
+            _save_histogram_data(filepath, log_centers, log_hist)
+            
+            # Stress - after
+            _, _, log_centers, log_hist, _ = analysis_results['after']['stress']['bins']
+            filepath = os.path.join(output_dir, f'data_histogram_stress_after{filename_suffix}.dat')
+            _save_histogram_data(filepath, log_centers, log_hist)
+            
+            # Delta alpha - after
+            if cfg_analysis['ANALYZE_ALPHA_DIFF'] and 'log_bins' in analysis_results['after']['delta_alpha']:
+                _, _, log_centers, log_hist, _ = analysis_results['after']['delta_alpha']['log_bins']
+                filepath = os.path.join(output_dir, f'data_histogram_dalpha_log_after{filename_suffix}.dat')
+                _save_histogram_data(filepath, log_centers, log_hist)
 
-    # --- Save Fit Parameters ---
+    # Save Fit Parameters
     if cfg_analysis['FIT_DATA'] or (cfg_analysis['ANALYZE_ALPHA_DIFF'] and cfg_analysis['FIT_ALPHA_DIFF']):
         filepath = os.path.join(output_dir, f'fit_parameters{filename_suffix}.txt')
         with open(filepath, 'w') as f:
+            f.write("="*60 + "\n")
+            f.write("TRUNCATED POWER LAW FIT PARAMETERS\n")
+            f.write("="*60 + "\n")
             f.write("Truncated Power Law Fit: P(x) = A * x^(-epsilon) * exp(-lambda * x)\n")
             f.write(f"Fitting method: {cfg_analysis['FIT_METHOD']}\n\n")
             
+            f.write("="*60 + "\n")
+            f.write("FULL DATASET\n")
+            f.write("="*60 + "\n")
             _write_fit_params(f, "ENERGY", analysis_results['energy'].get('fit'))
             _write_fit_params(f, "STRESS", analysis_results['stress'].get('fit'))
             if cfg_analysis['ANALYZE_ALPHA_DIFF']:
                 _write_fit_params(f, "ALPHA DIFFERENCES (Δα)", analysis_results['delta_alpha'].get('fit'))
+            
+            # NEW: Add E-S scaling parameters
+            f.write("\n" + "="*60 + "\n")
+            f.write("ENERGY-STRESS SCALING PARAMETERS\n")
+            f.write("="*60 + "\n")
+            f.write("Power Law Scaling: E ~ S^γ (log10(E) = γ * log10(S) + intercept)\n\n")
+            _write_scaling_params(f, "E-S SCALING (FULL)", analysis_results['scaling'].get('fit'))
+            
+            if split_mode and 'before' in analysis_results:
+                f.write("\n" + "="*60 + "\n")
+                f.write("BEFORE CRITICAL α\n")
+                f.write("="*60 + "\n")
+                _write_fit_params(f, "ENERGY (BEFORE)", analysis_results['before']['energy'].get('fit'))
+                _write_fit_params(f, "STRESS (BEFORE)", analysis_results['before']['stress'].get('fit'))
+                if cfg_analysis['ANALYZE_ALPHA_DIFF']:
+                    _write_fit_params(f, "ALPHA DIFFERENCES (Δα, BEFORE)", 
+                                    analysis_results['before']['delta_alpha'].get('fit'))
+                # NEW: Add E-S scaling parameters for before
+                _write_scaling_params(f, "E-S SCALING (BEFORE)", analysis_results['before']['scaling'].get('fit'))
+            
+            if split_mode and 'after' in analysis_results:
+                f.write("\n" + "="*60 + "\n")
+                f.write("AFTER CRITICAL α\n")
+                f.write("="*60 + "\n")
+                _write_fit_params(f, "ENERGY (AFTER)", analysis_results['after']['energy'].get('fit'))
+                _write_fit_params(f, "STRESS (AFTER)", analysis_results['after']['stress'].get('fit'))
+                if cfg_analysis['ANALYZE_ALPHA_DIFF']:
+                    _write_fit_params(f, "ALPHA DIFFERENCES (Δα, AFTER)", 
+                                    analysis_results['after']['delta_alpha'].get('fit'))
+                # NEW: Add E-S scaling parameters for after
+                _write_scaling_params(f, "E-S SCALING (AFTER)", analysis_results['after']['scaling'].get('fit'))
         
         print(f"  Saved: {filepath}")
-
 
 # =============================================================================
 # == MAIN SCRIPT
@@ -1160,17 +1485,20 @@ def main():
         'FILE_PATTERN': "./build*/energy_stress_log.csv",
         'SINGLE_FILE': "energy_stress_log.csv",
         'OUTPUT_DIR': './statistics',
-        'SHOW_PLOTS': False, # Whether to call plt.show() at the end
+        'SHOW_PLOTS': False,
+        
+        # NEW: Enable split analysis at maximum energy alpha
+        'SPLIT_BY_MAX_ENERGY': True,  # Set to False to use original behavior
         
         'FILTERS': {
             'BY_PLASTICITY': False,
             'BY_ALPHA': True,
-            'ALPHA_MIN': 0.4,
-            'ALPHA_MAX': .45,
+            'ALPHA_MIN': 0.140001,
+            'ALPHA_MAX': .7,
             
             'BY_XMIN': True,
             'ENERGY_XMIN': 1e-5,
-            'STRESS_XMIN': 1,
+            'STRESS_XMIN': 2,
             
             'BY_XMAX': False,
             'ENERGY_XMAX': 1e-2,
@@ -1179,7 +1507,7 @@ def main():
         
         'ANALYSIS': {
             'FIT_DATA': True,
-            'FIT_METHOD': 'logspace', # 'logspace', 'weighted', or 'both' (not implemented, defaults to logspace)
+            'FIT_METHOD': 'logspace',
             
             'ANALYZE_ALPHA_DIFF': True,
             'FIT_ALPHA_DIFF': False,
@@ -1188,22 +1516,20 @@ def main():
             'NBIN_LINEAR': 120,
             'NBIN_SCALING': 20,
             
-            'RUNNING_AVG_WINDOW': 250,  # Window size for running average in time series plots
+            'RUNNING_AVG_WINDOW': 250,
         }
     }
     # =========================
     
-    # 1. Setup Environment
-
+    # Setup Environment
     if os.path.exists(CONFIG['OUTPUT_DIR']):
         shutil.rmtree(CONFIG['OUTPUT_DIR'])
         print(f"Cleaned existing output directory: {CONFIG['OUTPUT_DIR']}")
 
-
     os.makedirs(CONFIG['OUTPUT_DIR'], exist_ok=True)
     print(f"Output directory: {CONFIG['OUTPUT_DIR']}")
     
-    # 2. Find Files
+    # Find Files
     if CONFIG['USE_MULTIPLE_FILES']:
         print(f"\nSearching for files matching: {CONFIG['FILE_PATTERN']}")
         filenames = sorted(glob.glob(CONFIG['FILE_PATTERN']))
@@ -1218,30 +1544,33 @@ def main():
     print(f"\nFound {len(filenames)} files to process:")
     for f in filenames:
         print(f"  - {f}")
+    
+    if CONFIG['SPLIT_BY_MAX_ENERGY']:
+        print("\n*** SPLIT MODE ENABLED: Will analyze before/after maximum energy α ***\n")
 
-    # 3. Load and Process Data
+    # Load and Process Data
     print("\n" + "="*60)
     print("STEP 1: LOADING AND PROCESSING DATA")
     print("="*60)
     raw_data = load_and_process_data(filenames, CONFIG)
     
-    if all(len(v) == 0 for k, v in raw_data.items() if k != 'time_series'):
+    if all(len(v) == 0 for k, v in raw_data.items() if k not in ['time_series', 'critical_alphas', 'before', 'after']):
         print("ERROR: No data was loaded after processing. Check files and filters.")
         exit(1)
 
-    # 4. Run Analyses
+    # Run Analyses
     print("\n" + "="*60)
     print("STEP 2: RUNNING ANALYSES")
     print("="*60)
     analysis_results = run_analyses(raw_data, CONFIG)
 
-    # 5. Generate Plotsf
+    # Generate Plots
     print("\n" + "="*60)
     print("STEP 3: GENERATING PLOTS")
     print("="*60)
     generate_plots(raw_data, analysis_results, CONFIG)
 
-    # 6. Save Data Files
+    # Save Data Files
     print("\n" + "="*60)
     print("STEP 4: SAVING DATA FILES")
     print("="*60)
